@@ -122,7 +122,8 @@ public class SurvivalCore extends JavaPlugin {
         saveConfig();
         enableModules();
         for (Module module : wasOn) {
-            if (enabled.contains(module)) continue;
+            // Only modules switched off in config.yml (not ones that failed to start).
+            if (enabled.contains(module) || getConfig().getBoolean(module.id() + ".enabled", true)) continue;
             try {
                 module.turnedOff();
             } catch (Throwable t) {

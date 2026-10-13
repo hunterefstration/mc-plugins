@@ -49,14 +49,29 @@ public class EffectBooksModule extends Module {
         EffectBooksCommand admin = new EffectBooksCommand(this);
         plugin.bind("effectbooks", this, admin);
         plugin.bind("book", this, new BookCommand(this));
+        // Always registered: while books are switched off, effects they gave are taken off
+        // players as they join (they'd otherwise keep them, with nothing protecting them).
+        plugin.getServer().getPluginManager().registerEvents(new Listener() {
+            @org.bukkit.event.EventHandler
+            public void onJoin(org.bukkit.event.player.PlayerJoinEvent event) {
+                if (plugin.isEnabled(EffectBooksModule.this)) return;
+                new BookManager(EffectBooksModule.this).stripEffects(event.getPlayer());
+            }
+        }, plugin);
     }
 
     @Override
     public void enable() {
         migrateStandalonePlugin();
         if (!configFile.exists()) plugin.saveResource("effectbooks.yml", false);
+        BookManager previous = manager;
         manager = new BookManager(this);
         manager.load();
+        if (manager.isBroken() && previous != null && previous.hasLoaded()) {
+            // effectbooks.yml is broken right now: keep running on the books we already had.
+            manager = previous;
+            manager.markBroken();
+        }
         chatPrompt = new ChatPrompt(this);
 
         listeners.clear();
@@ -152,6 +167,17 @@ public class EffectBooksModule extends Module {
     public FileConfiguration getConfig() {
         if (config == null) reloadConfig();
         return config;
+    }
+
+    /** Whether effectbooks.yml can be read right now (without changing anything). */
+    public boolean configFileParses() {
+        if (!configFile.exists()) return true;
+        try {
+            new YamlConfiguration().load(configFile);
+            return true;
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            return false;
+        }
     }
 
     /**

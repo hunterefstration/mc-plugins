@@ -491,6 +491,44 @@ class EffectBooksTest {
     }
 
     @Test
+    void emptyOrUnindentedBooksNeverWipeNames() throws Exception {
+        PlayerMock steve = join("Steve");
+        server.getScheduler().performTicks(2);
+        write(steve, "Bob");
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
+
+        java.nio.file.Files.writeString(file.toPath(), "books:\nSteve: SPEED\n"); // not indented
+        plugin.reload();
+        assertTrue(manager.isBroken());
+
+        java.nio.file.Files.writeString(file.toPath(), "books:\n"); // emptied by accident
+        plugin.reload();
+        assertTrue(manager.isBroken());
+
+        java.nio.file.Files.writeString(file.toPath(), "books:\n  Steve:\n  Alex: STRENGTH:2\n"); // blank holder
+        plugin.reload();
+        assertFalse(manager.isBroken());
+        assertNull(manager.find("Steve", PotionEffectType.SPEED), "inactive until fixed");
+
+        java.nio.file.Files.writeString(file.toPath(), "books:\n  Steve: SPEED\n");
+        plugin.reload();
+        assertEquals(List.of("Bob"), manager.find("Steve", PotionEffectType.SPEED).targets());
+    }
+
+    @Test
+    void handEditsSurviveSeveralInGameChanges() throws Exception {
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
+        String text = java.nio.file.Files.readString(file.toPath());
+        assertTrue(text.contains("\nbooks:\n"));
+        java.nio.file.Files.writeString(file.toPath(), text.replace("\nbooks:\n", "\nbooks:\n  Hand: LUCK\n"));
+        manager.create("Herobrine", PotionEffectType.HASTE, 1);
+        manager.create("Notch", PotionEffectType.LUCK, 1);
+        plugin.reload();
+        assertNotNull(manager.find("Hand", PotionEffectType.LUCK), "the hand-added line survived both saves");
+        assertNotNull(manager.find("Notch", PotionEffectType.LUCK));
+    }
+
+    @Test
     void removingFromConfigDeletesBook() {
         PlayerMock steve = join("Steve");
         PlayerMock bob = join("Bob");

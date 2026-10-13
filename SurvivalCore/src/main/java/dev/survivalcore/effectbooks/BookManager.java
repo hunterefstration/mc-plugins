@@ -63,6 +63,18 @@ public final class BookManager {
     /** Books whose config line failed to parse; kept untouched so a typo doesn't wipe their names. */
     private final Map<UUID, Book> dormant = new LinkedHashMap<>();
 
+    /** Data entries that couldn't be read (unknown effect...), written back untouched. */
+    private final Map<String, Map<String, Object>> badData = new LinkedHashMap<>();
+
+    private static Map<String, Object> toMap(ConfigurationSection section) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (String key : section.getKeys(false)) {
+            Object v = section.get(key);
+            map.put(key, v instanceof ConfigurationSection c ? toMap(c) : v);
+        }
+        return map;
+    }
+
     /** Lines from effectbooks.yml that didn't parse, kept so rewriting the file never deletes them. */
     private final Map<String, List<String>> badSpecs = new LinkedHashMap<>();
     private final Map<String, Object> badHolders = new LinkedHashMap<>();
@@ -96,9 +108,11 @@ public final class BookManager {
             plugin.getLogger().severe("effectbooks-data.yml can't be read: " + e.getMessage());
             dataOk = false;
         }
-        Object rawBooks = config.get("books");
+        Object rawBooks = config.get("books", null); // the file's own value, not the default
         boolean booksOk = rawBooks == null || rawBooks instanceof ConfigurationSection;
         if (!booksOk) plugin.getLogger().severe("effectbooks.yml: 'books:' must be a list of holders (check the indentation).");
+        RawCheck raw = configOk ? rawCheck() : new RawCheck(false, Set.of());
+        if (configOk && !raw.ok()) booksOk = false;
         if (!configOk || !dataOk || !booksOk) {
             // Never treat a broken file as "no books": keep what's loaded and don't save anything.
             broken = true;
@@ -109,6 +123,7 @@ public final class BookManager {
         broken = false;
 
         List<Book> stored = new ArrayList<>();
+        badData.clear();
         ConfigurationSection dataBooks = data.getConfigurationSection("books");
         if (dataBooks != null) {
             for (String key : dataBooks.getKeys(false)) {
@@ -117,12 +132,17 @@ public final class BookManager {
                 try {
                     PotionEffectType effect = Effects.parse(s.getString("effect"));
                     String holder = s.getString("holder");
-                    if (effect == null || holder == null) continue;
+                    if (effect == null || holder == null) {
+                        plugin.getLogger().warning("Keeping unreadable book entry '" + key + "' in effectbooks-data.yml as it is.");
+                        badData.put(key, toMap(s));
+                        continue;
+                    }
                     Book book = new Book(UUID.fromString(key), holder, effect, clampLevel(s.getInt("level", 1)));
                     book.targets().addAll(s.getStringList("targets"));
                     stored.add(book);
                 } catch (IllegalArgumentException e) {
-                    plugin.getLogger().warning("Skipping corrupt book entry '" + key + "' in effectbooks-data.yml");
+                    plugin.getLogger().warning("Keeping unreadable book entry '" + key + "' in effectbooks-data.yml as it is.");
+                    badData.put(key, toMap(s));
                 }
             }
         }
@@ -186,6 +206,12 @@ public final class BookManager {
             }
         }
 
+        for (String blank : raw.blankHolders()) {
+            plugin.getLogger().warning("effectbooks.yml: '" + blank + "' has no effect. Their books are kept but inactive until it is fixed.");
+            badHolders.put(blank, "");
+            configErrors = true;
+        }
+
         for (Book leftover : stored) {
             if (configErrors) {
                 dormant.put(leftover.id(), leftover);
@@ -202,15 +228,77 @@ public final class BookManager {
         saveData();
     }
 
+    /**
+     * What Bukkit hides: "books:" left empty, holders left blank ("Steve:"), or holder lines that
+     * slipped out of the books section (not indented). Read straight from the YAML.
+     */
+    private record RawCheck(boolean ok, Set<String> blankHolders) {}
+
+    private static final Set<String> SETTINGS = Set.of("books", "check-interval-ticks", "show-particles", "show-icon",
+            "absorption-refill-seconds");
+
+    private RawCheck rawCheck() {
+        File file = new File(plugin.getDataFolder(), "effectbooks.yml");
+        if (!file.exists()) return new RawCheck(true, Set.of());
+        Object root;
+        try {
+            root = new org.yaml.snakeyaml.Yaml().load(java.nio.file.Files.readString(file.toPath()));
+        } catch (IOException | RuntimeException e) {
+            return new RawCheck(true, Set.of()); // Bukkit already reported real syntax errors
+        }
+        if (!(root instanceof Map<?, ?> top)) return new RawCheck(true, Set.of());
+        for (Object key : top.keySet()) {
+            String k = String.valueOf(key);
+            if (!SETTINGS.contains(k) && Effects.isValidName(k)) {
+                plugin.getLogger().severe("effectbooks.yml: '" + k + "' is outside 'books:' (it needs to be indented under it).");
+                return new RawCheck(false, Set.of());
+            }
+        }
+        Object books = top.get("books");
+        if (top.containsKey("books") && books == null && hasStoredBooks()) {
+            plugin.getLogger().severe("effectbooks.yml: 'books:' is empty but books exist. Write 'books: {}' to really delete them all.");
+            return new RawCheck(false, Set.of());
+        }
+        Set<String> blank = new HashSet<>();
+        if (books instanceof Map<?, ?> m) {
+            for (Map.Entry<?, ?> e : m.entrySet()) if (e.getValue() == null) blank.add(String.valueOf(e.getKey()));
+        }
+        return new RawCheck(true, blank);
+    }
+
+    private boolean hasStoredBooks() {
+        try {
+            YamlConfiguration data = new YamlConfiguration();
+            if (dataFile.exists()) data.load(dataFile);
+            ConfigurationSection s = data.getConfigurationSection("books");
+            return s != null && !s.getKeys(false).isEmpty();
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            return true;
+        }
+    }
+
     /** True while effectbooks.yml or its data file has a YAML error. */
     public boolean isBroken() {
         return broken;
     }
 
     private void requireWritable() {
+        if (!broken && !plugin.configFileParses()) {
+            broken = true;
+            plugin.getLogger().severe("effectbooks.yml was edited and now has an error. Fix it and run /eb reload.");
+        }
         if (broken) {
             throw new IllegalArgumentException("effectbooks.yml (or its data file) has an error. Fix it and run /eb reload first.");
         }
+    }
+
+    /** Keep running on these books while the files are broken (used across /sc reload). */
+    public void markBroken() {
+        broken = true;
+    }
+
+    public boolean hasLoaded() {
+        return everLoaded;
     }
 
     public void saveData() {
@@ -225,6 +313,7 @@ public final class BookManager {
             data.set(path + ".level", b.level());
             data.set(path + ".targets", new ArrayList<>(b.targets()));
         }
+        for (Map.Entry<String, Map<String, Object>> e : badData.entrySet()) data.createSection("books." + e.getKey(), e.getValue());
         try {
             data.save(dataFile);
         } catch (IOException e) {
@@ -270,6 +359,9 @@ public final class BookManager {
             section.set(e.getKey(), e.getValue().size() == 1 ? e.getValue().get(0) : e.getValue());
         }
         for (Map.Entry<String, Object> e : badHolders.entrySet()) section.set(e.getKey(), e.getValue());
+        // Remember what *we* wrote (before hand edits go on top), so hand edits keep being spotted
+        // on later saves too, until /eb reload applies them.
+        rememberRaw();
         // Lines changed by hand since the last reload win; /eb reload applies them.
         if (!handEdited.isEmpty()) {
             for (Map.Entry<String, Object> e : handEdited.entrySet()) section.set(e.getKey(), e.getValue());
@@ -277,7 +369,6 @@ public final class BookManager {
                     + "; kept those lines. Run /eb reload to apply them.");
         }
         plugin.saveConfig();
-        rememberRaw();
     }
 
     /** What the books section looked like when we last read or wrote it (to spot hand edits). */
@@ -457,6 +548,11 @@ public final class BookManager {
         return pages;
     }
 
+    private List<String> pagesOf(ItemStack item) {
+        if (item != null && item.getItemMeta() instanceof BookMeta meta) return parsePages(meta).names();
+        return List.of();
+    }
+
     /** Result of reading the names out of an edited book. */
     public record ParsedPages(List<String> names, List<String> invalid) {}
 
@@ -611,7 +707,9 @@ public final class BookManager {
                 inv.setItem(slot, null);
                 continue;
             }
-            ItemStack expected = createItem(book);
+            // While it's out, the pages stay as the holder saw them (their edit is merged with any
+            // changes made meanwhile when they press Done). Only a changed effect/level/holder is refreshed.
+            ItemStack expected = createItem(book, pagesOf(contents[slot]));
             if (!expected.isSimilar(contents[slot])) inv.setItem(slot, expected);
         }
 
@@ -672,6 +770,7 @@ public final class BookManager {
 
     /** On quit: put the book away (so the tool goes back) and forget per-player state. */
     public void forget(Player player) {
+        if (isEffectBook(player.getItemOnCursor())) player.setItemOnCursor(null);
         putAway(player);
         movedTools.remove(player.getUniqueId());
         openedWith.remove(player.getUniqueId());
@@ -723,8 +822,8 @@ public final class BookManager {
      */
     public List<String> mergeEdit(Player player, Book book, List<String> written) {
         Map<UUID, List<String>> mine = openedWith.get(player.getUniqueId());
-        List<String> before = mine == null ? null : mine.remove(book.id());
-        if (before == null) return written;
+        List<String> before = mine == null ? null : mine.get(book.id()); // dropped once the edit is saved
+        if (before == null) return new ArrayList<>(written);
         Set<String> beforeLower = new HashSet<>();
         for (String n : before) beforeLower.add(n.toLowerCase(Locale.ROOT));
         Set<String> writtenLower = new HashSet<>();
@@ -735,7 +834,13 @@ public final class BookManager {
             // Added by someone else after they opened it, and not already in what they wrote.
             if (!beforeLower.contains(lower) && !writtenLower.contains(lower)) result.add(current);
         }
-        return result.subList(0, Math.min(result.size(), MAX_TARGETS));
+        return result;
+    }
+
+    /** The edit went through: forget what the book looked like when it was taken out. */
+    public void finishEdit(Player player, Book book) {
+        Map<UUID, List<String>> mine = openedWith.get(player.getUniqueId());
+        if (mine != null) mine.remove(book.id());
     }
 
     /** Where giveToHand moved a player's held item to, so it can go back afterwards. */
@@ -807,17 +912,21 @@ public final class BookManager {
             PotionEffectType type = e.getKey();
             PotionEffect current = player.getPotionEffect(type);
             int amp = e.getValue();
-            if (type.equals(PotionEffectType.ABSORPTION) && current == null) {
-                // Its golden hearts were used up; give them back after a while, not every check.
+            boolean ours = current != null && hasOurs(current, amp);
+            if (type.equals(PotionEffectType.ABSORPTION) && !ours) {
+                // Its golden hearts were used up; give them back after a while, not every check
+                // (and not straight away just because a weaker golden apple is active).
                 Long usedUp = absorptionUsedUp.get(player.getUniqueId());
                 if (usedUp != null && System.currentTimeMillis() - usedUp < refill) continue;
                 absorptionUsedUp.remove(player.getUniqueId());
             }
-            boolean ours = current != null && current.isInfinite() && current.getAmplifier() == amp;
-            if (ours && (current.hasParticles() != particles || current.hasIcon() != icon || !current.isAmbient())) {
-                // Settings changed, or a beacon/potion copied its own particle/icon flags onto ours.
-                player.removePotionEffect(type);
-                current = null;
+            boolean onTop = current != null && current.isInfinite() && current.getAmplifier() == amp;
+            if (onTop && (current.hasParticles() != particles || current.hasIcon() != icon)) {
+                // Settings changed, or a beacon/potion copied its own flags onto ours: vanilla
+                // updates the flags in place when the same effect is added again (no removal, so
+                // Health Boost hearts and Absorption aren't touched).
+                player.addPotionEffect(new PotionEffect(type, PotionEffect.INFINITE_DURATION, amp, true, particles, icon));
+                continue;
             } else if (ours) {
                 continue;
             }
@@ -828,6 +937,14 @@ public final class BookManager {
         }
 
         if (!desired.equals(managed)) writeManaged(player, desired);
+    }
+
+    /** Our infinite effect is this one, or hidden underneath it. */
+    public static boolean hasOurs(PotionEffect effect, int amp) {
+        for (PotionEffect e = effect; e != null; e = e.getHiddenPotionEffect()) {
+            if (e.isInfinite() && e.getAmplifier() == amp) return true;
+        }
+        return false;
     }
 
     /**
@@ -859,8 +976,12 @@ public final class BookManager {
 
     /** Takes book effects off everyone online (when books are turned off). The record is kept for later. */
     public void stripEffects() {
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            for (Map.Entry<PotionEffectType, Integer> e : readManaged(p).entrySet()) removeOurs(p, e.getKey(), e.getValue());
+        for (Player p : Bukkit.getOnlinePlayers()) stripEffects(p);
+    }
+
+    public void stripEffects(Player player) {
+        for (Map.Entry<PotionEffectType, Integer> e : readManaged(player).entrySet()) {
+            removeOurs(player, e.getKey(), e.getValue());
         }
     }
 

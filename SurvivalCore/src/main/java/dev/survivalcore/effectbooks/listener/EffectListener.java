@@ -1,5 +1,6 @@
 package dev.survivalcore.effectbooks.listener;
 
+import dev.survivalcore.effectbooks.BookManager;
 import dev.survivalcore.effectbooks.EffectBooksModule;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -29,8 +30,10 @@ public final class EffectListener implements Listener {
         if (cause == EntityPotionEffectEvent.Cause.PLUGIN) return;
         if (cause == EntityPotionEffectEvent.Cause.EXPIRATION) {
             PotionEffect old = event.getOldEffect();
-            if (old != null && old.isInfinite() && event.getModifiedType().equals(PotionEffectType.ABSORPTION)) {
-                plugin.manager().absorptionUsedUp(player);
+            if (old != null && event.getModifiedType().equals(PotionEffectType.ABSORPTION)) {
+                Integer amp = plugin.manager().desiredEffects(player.getName()).get(PotionEffectType.ABSORPTION);
+                // Ours ran out of hearts, either on top or hidden under a stronger golden apple.
+                if (amp != null && BookManager.hasOurs(old, amp)) plugin.manager().absorptionUsedUp(player);
             }
             return;
         }

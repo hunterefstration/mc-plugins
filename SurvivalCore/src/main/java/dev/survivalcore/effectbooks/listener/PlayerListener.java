@@ -41,6 +41,8 @@ public final class PlayerListener implements Listener {
 
     /** Names that weren't valid usernames in each player's last edit (for the message at MONITOR). */
     private final java.util.Map<UUID, java.util.List<String>> invalidNames = new java.util.HashMap<>();
+    /** How many names didn't fit (over the 1300-name limit) in each player's last edit. */
+    private final java.util.Map<UUID, Integer> droppedNames = new java.util.HashMap<>();
 
     /** Checks the edit and rewrites the pages cleanly. Nothing is saved until MONITOR. */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -69,6 +71,8 @@ public final class PlayerListener implements Listener {
         }
         List<String> names = manager.mergeEdit(player, book, parsed.names());
         invalidNames.put(player.getUniqueId(), parsed.invalid());
+        droppedNames.put(player.getUniqueId(), Math.max(0, names.size() - BookManager.MAX_TARGETS));
+        if (names.size() > BookManager.MAX_TARGETS) names = names.subList(0, BookManager.MAX_TARGETS);
         event.setNewBookMeta((BookMeta) manager.createItem(book, names).getItemMeta());
     }
 
@@ -80,16 +84,23 @@ public final class PlayerListener implements Listener {
         Player player = event.getPlayer();
         Book book = manager.get(id);
         List<String> invalid = invalidNames.remove(player.getUniqueId());
+        Integer droppedCount = droppedNames.remove(player.getUniqueId());
+        int dropped = droppedCount == null ? 0 : droppedCount;
         if (book == null || !book.isHolder(player.getName()) || manager.isBroken()) return;
 
         List<String> names = BookManager.parsePages(event.getNewBookMeta()).names();
         manager.setTargets(book, names);
+        manager.finishEdit(player, book);
         // Done writing: the book goes back to its spot in the crafting slot.
         plugin.getServer().getScheduler().runTaskLater(plugin.core(), () -> manager.putAway(player), 1L);
 
         player.sendMessage(plugin.prefix() + ChatColor.LIGHT_PURPLE + book.displayName() + ChatColor.GRAY
                 + " now grants " + ChatColor.AQUA + book.targets().size() + ChatColor.GRAY
                 + (book.targets().size() == 1 ? " player." : " players."));
+        if (dropped > 0) {
+            player.sendMessage(plugin.prefix() + ChatColor.RED + "A book holds at most " + BookManager.MAX_TARGETS
+                    + " names; the last " + dropped + " weren't added.");
+        }
         if (invalid != null && !invalid.isEmpty()) {
             player.sendMessage(plugin.prefix() + ChatColor.RED + "Ignored invalid names: " + String.join(", ", invalid));
         }
