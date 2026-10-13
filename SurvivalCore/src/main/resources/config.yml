@@ -95,13 +95,58 @@ ender-chest:
   rows: 6
   title: "Ender Chest"
 
-# Trial chamber vaults can be opened again with another key.
+# Trial chamber vaults can be opened again and again, as long as you have another key.
 revaulting:
   enabled: true
   # Wait this long (in ticks, 20 = 1 second) before the same player can use a vault again.
   cooldown-ticks:
     vault: 0
     ominous-vault: 0
+
+# Hidden stone, deepslate and netherrack near players sometimes turns into ore.
+# Only fully enclosed blocks that no player placed can change (and not generator stone),
+# so nobody ever sees it happen and builds are never touched.
+ore-growth:
+  enabled: true
+  # How often to check (ticks) and how many random spots near each player per check.
+  interval-ticks: 40
+  samples-per-player: 8
+  # Chance that a checked spot grows a vein (if it's hidden, natural stone).
+  chance: 0.01
+  # Only between these distances from the player (blocks).
+  min-distance: 6
+  max-distance: 24
+  # New veins allowed per chunk, ever. Keeps it from filling up around bases.
+  max-veins-per-chunk: 4
+  vein-size:
+    min: 1
+    max: 4
+  disabled-worlds: []
+  # Which ores, and how likely each is (relative weights). Diamonds, redstone, gold and lapis
+  # still only appear at their vanilla heights.
+  ores:
+    stone:
+      COAL_ORE: 40
+      IRON_ORE: 30
+      COPPER_ORE: 20
+      GOLD_ORE: 5
+      REDSTONE_ORE: 5
+      LAPIS_ORE: 4
+      DIAMOND_ORE: 2
+      EMERALD_ORE: 1
+    deepslate:
+      DEEPSLATE_COAL_ORE: 5
+      DEEPSLATE_IRON_ORE: 25
+      DEEPSLATE_COPPER_ORE: 10
+      DEEPSLATE_GOLD_ORE: 12
+      DEEPSLATE_REDSTONE_ORE: 20
+      DEEPSLATE_LAPIS_ORE: 10
+      DEEPSLATE_DIAMOND_ORE: 8
+      DEEPSLATE_EMERALD_ORE: 1
+    netherrack:
+      NETHER_QUARTZ_ORE: 70
+      NETHER_GOLD_ORE: 28
+      ANCIENT_DEBRIS: 2
 
 # /skin <name> to wear any player's skin, /skin clear to go back.
 skins:

@@ -1,0 +1,275 @@
+package dev.survivalcore.ores;
+
+import dev.survivalcore.Module;
+import dev.survivalcore.SurvivalCore;
+import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
+import org.bukkit.GameMode;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Deque;
+import java.util.EnumMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * Hidden stone, deepslate and netherrack near players sometimes turns into ore. Only blocks that
+ * are completely enclosed (no air, water or see-through block touching any side) and natural
+ * (never placed by a player or made by a cobblestone/stone generator) can change, so nobody sees it
+ * happen and builds are never touched. Each chunk only gets a limited number of new veins.
+ */
+public final class OreGrowthModule extends Module {
+
+    private static final BlockFace[] FACES = {BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH, BlockFace.SOUTH,
+            BlockFace.EAST, BlockFace.WEST};
+    private static final Set<Material> HOSTS = Set.of(Material.STONE, Material.DEEPSLATE, Material.NETHERRACK);
+
+    private final NamespacedKey placedKey;
+    private final NamespacedKey grownKey;
+    private final Map<Material, Map<Material, Integer>> weights = new EnumMap<>(Material.class);
+    private BukkitTask task;
+    private double chance;
+    private int samples;
+    private int minRadius;
+    private int maxRadius;
+    private int perChunk;
+    private int minVein;
+    private int maxVein;
+    private Set<String> disabledWorlds = new HashSet<>();
+
+    public OreGrowthModule(SurvivalCore plugin) {
+        super(plugin, "ore-growth", "OreGrowth");
+        this.placedKey = new NamespacedKey(plugin, "placed_hosts");
+        this.grownKey = new NamespacedKey(plugin, "grown_veins");
+    }
+
+    @Override
+    public void enable() {
+        chance = Math.max(0, Math.min(1, config().getDouble("chance", 0.01)));
+        samples = Math.max(1, config().getInt("samples-per-player", 8));
+        minRadius = Math.max(0, config().getInt("min-distance", 6));
+        maxRadius = Math.max(minRadius + 1, config().getInt("max-distance", 24));
+        perChunk = Math.max(0, config().getInt("max-veins-per-chunk", 4));
+        minVein = Math.max(1, config().getInt("vein-size.min", 1));
+        maxVein = Math.max(minVein, config().getInt("vein-size.max", 4));
+        disabledWorlds = new HashSet<>(config().getStringList("disabled-worlds"));
+
+        weights.clear();
+        loadWeights(Material.STONE, "ores.stone");
+        loadWeights(Material.DEEPSLATE, "ores.deepslate");
+        loadWeights(Material.NETHERRACK, "ores.netherrack");
+
+        long interval = Math.max(1, config().getLong("interval-ticks", 40));
+        task = plugin.getServer().getScheduler().runTaskTimer(plugin, this::tick, interval, interval);
+    }
+
+    @Override
+    public void disable() {
+        if (task != null) task.cancel();
+        task = null;
+    }
+
+    private void loadWeights(Material host, String path) {
+        Map<Material, Integer> map = new LinkedHashMap<>();
+        ConfigurationSection s = config().getConfigurationSection(path);
+        if (s != null) {
+            for (String key : s.getKeys(false)) {
+                Material ore = Material.matchMaterial(key);
+                int w = s.getInt(key);
+                if (ore == null || !ore.isBlock()) {
+                    plugin.getLogger().warning("ore-growth." + path + ": unknown block '" + key + "'");
+                } else if (w > 0) {
+                    map.put(ore, w);
+                }
+            }
+        }
+        weights.put(host, map);
+    }
+
+    // ------------------------------------------------------------------ growing
+
+    private void tick() {
+        if (chance <= 0) return;
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.getGameMode() == GameMode.SPECTATOR) continue;
+            World world = player.getWorld();
+            if (disabledWorlds.contains(world.getName()) || world.getEnvironment() == World.Environment.THE_END) continue;
+            Location at = player.getLocation();
+            for (int i = 0; i < samples; i++) {
+                if (rnd.nextDouble() >= chance) continue; // decide first: cheap, and keeps the rate exact
+                Block block = randomBlockAround(world, at, rnd);
+                if (block != null) tryGrow(block, rnd);
+            }
+        }
+    }
+
+    private Block randomBlockAround(World world, Location at, ThreadLocalRandom rnd) {
+        for (int attempt = 0; attempt < 4; attempt++) {
+            int dx = rnd.nextInt(-maxRadius, maxRadius + 1);
+            int dy = rnd.nextInt(-maxRadius, maxRadius + 1);
+            int dz = rnd.nextInt(-maxRadius, maxRadius + 1);
+            int d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > maxRadius * maxRadius || d2 < minRadius * minRadius) continue;
+            int x = at.getBlockX() + dx, y = at.getBlockY() + dy, z = at.getBlockZ() + dz;
+            if (y <= world.getMinHeight() || y >= world.getMaxHeight() - 1) continue;
+            if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
+            Block b = world.getBlockAt(x, y, z);
+            if (HOSTS.contains(b.getType())) return b;
+        }
+        return null;
+    }
+
+    private void tryGrow(Block origin, ThreadLocalRandom rnd) {
+        Material host = origin.getType();
+        if (!isHiddenNatural(origin, host)) return;
+        Chunk chunk = origin.getChunk();
+        PersistentDataContainer pdc = chunk.getPersistentDataContainer();
+        int grown = pdc.getOrDefault(grownKey, PersistentDataType.INTEGER, 0);
+        if (grown >= perChunk) return;
+
+        Material ore = pickOre(host, origin.getY(), rnd);
+        if (ore == null) return;
+        int size = Math.min(maxSizeFor(ore), rnd.nextInt(minVein, maxVein + 1));
+
+        // Grow a small connected vein through hidden, natural blocks of the same kind.
+        List<Block> vein = new ArrayList<>();
+        Set<Block> seen = new HashSet<>();
+        Deque<Block> queue = new ArrayDeque<>();
+        queue.add(origin);
+        seen.add(origin);
+        while (!queue.isEmpty() && vein.size() < size) {
+            Block b = queue.poll();
+            if (b != origin && (b.getType() != host || !isHiddenNatural(b, host))) continue;
+            vein.add(b);
+            List<BlockFace> faces = new ArrayList<>(Arrays.asList(FACES));
+            java.util.Collections.shuffle(faces, rnd);
+            for (BlockFace f : faces) {
+                Block n = b.getRelative(f);
+                if (seen.add(n) && n.getWorld().isChunkLoaded(n.getX() >> 4, n.getZ() >> 4)) queue.add(n);
+            }
+        }
+        for (Block b : vein) b.setType(ore, false);
+        pdc.set(grownKey, PersistentDataType.INTEGER, grown + 1);
+    }
+
+    /** Every side touches a solid, opaque block, and no player put it there. */
+    private boolean isHiddenNatural(Block block, Material host) {
+        if (block.getType() != host) return false;
+        for (BlockFace f : FACES) {
+            Block n = block.getRelative(f);
+            if (!n.getWorld().isChunkLoaded(n.getX() >> 4, n.getZ() >> 4)) return false;
+            Material t = n.getType();
+            if (!t.isOccluding() || t.isAir()) return false;
+        }
+        return !isPlaced(block);
+    }
+
+    private Material pickOre(Material host, int y, ThreadLocalRandom rnd) {
+        Map<Material, Integer> table = weights.get(host);
+        if (table == null || table.isEmpty()) return null;
+        Map<Material, Integer> usable = new LinkedHashMap<>();
+        for (Map.Entry<Material, Integer> e : table.entrySet()) {
+            if (fitsHeight(e.getKey(), y)) usable.put(e.getKey(), e.getValue());
+        }
+        int total = usable.values().stream().mapToInt(Integer::intValue).sum();
+        if (total <= 0) return null;
+        int roll = rnd.nextInt(total);
+        for (Map.Entry<Material, Integer> e : usable.entrySet()) {
+            roll -= e.getValue();
+            if (roll < 0) return e.getKey();
+        }
+        return null;
+    }
+
+    /** Keeps ores roughly where vanilla puts them (no diamonds near the surface). */
+    private static boolean fitsHeight(Material ore, int y) {
+        return switch (ore) {
+            case DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, REDSTONE_ORE, DEEPSLATE_REDSTONE_ORE -> y <= 16;
+            case GOLD_ORE, DEEPSLATE_GOLD_ORE -> y <= 32;
+            case LAPIS_ORE, DEEPSLATE_LAPIS_ORE -> y <= 64;
+            case EMERALD_ORE -> y >= 0;
+            case ANCIENT_DEBRIS -> y >= 8 && y <= 119;
+            default -> true;
+        };
+    }
+
+    private static int maxSizeFor(Material ore) {
+        return switch (ore) {
+            case EMERALD_ORE, DEEPSLATE_EMERALD_ORE, ANCIENT_DEBRIS -> 1;
+            case DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE -> 3;
+            default -> Integer.MAX_VALUE;
+        };
+    }
+
+    // ------------------------------------------------------------------ remembering placed blocks
+
+    private static long pack(Block b) {
+        return ((long) (b.getX() & 15) << 40) | ((long) (b.getZ() & 15) << 32) | (b.getY() & 0xFFFFFFFFL);
+    }
+
+    private boolean isPlaced(Block block) {
+        long[] placed = block.getChunk().getPersistentDataContainer().get(placedKey, PersistentDataType.LONG_ARRAY);
+        if (placed == null) return false;
+        long key = pack(block);
+        for (long l : placed) if (l == key) return true;
+        return false;
+    }
+
+    private void setPlaced(Block block, boolean placed) {
+        PersistentDataContainer pdc = block.getChunk().getPersistentDataContainer();
+        long[] current = pdc.getOrDefault(placedKey, PersistentDataType.LONG_ARRAY, new long[0]);
+        long key = pack(block);
+        int index = -1;
+        for (int i = 0; i < current.length; i++) if (current[i] == key) index = i;
+        if (placed && index < 0) {
+            long[] next = Arrays.copyOf(current, current.length + 1);
+            next[current.length] = key;
+            pdc.set(placedKey, PersistentDataType.LONG_ARRAY, next);
+        } else if (!placed && index >= 0) {
+            long[] next = new long[current.length - 1];
+            System.arraycopy(current, 0, next, 0, index);
+            System.arraycopy(current, index + 1, next, index, current.length - index - 1);
+            if (next.length == 0) pdc.remove(placedKey);
+            else pdc.set(placedKey, PersistentDataType.LONG_ARRAY, next);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPlace(BlockPlaceEvent event) {
+        if (HOSTS.contains(event.getBlockPlaced().getType())) setPlaced(event.getBlockPlaced(), true);
+    }
+
+    /** Stone made by lava and water (generators) isn't natural either. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onForm(BlockFormEvent event) {
+        if (HOSTS.contains(event.getNewState().getType())) setPlaced(event.getBlock(), true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBreak(BlockBreakEvent event) {
+        if (HOSTS.contains(event.getBlock().getType())) setPlaced(event.getBlock(), false);
+    }
+}

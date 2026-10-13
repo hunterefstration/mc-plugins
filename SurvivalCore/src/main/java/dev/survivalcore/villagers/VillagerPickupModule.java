@@ -216,7 +216,11 @@ public final class VillagerPickupModule extends Module {
         byte[] data = item.getItemMeta().getPersistentDataContainer().get(dataKey, PersistentDataType.BYTE_ARRAY);
         Entity entity;
         try {
-            entity = Bukkit.getUnsafe().deserializeEntity(data, target.getWorld(), false);
+            // Keep the villager's own UUID (it's the same villager), unless one with that UUID somehow exists.
+            entity = Bukkit.getUnsafe().deserializeEntity(data, target.getWorld(), true);
+            if (Bukkit.getEntity(entity.getUniqueId()) != null) {
+                entity = Bukkit.getUnsafe().deserializeEntity(data, target.getWorld(), false);
+            }
             if (!entity.spawnAt(at, CreatureSpawnEvent.SpawnReason.SPAWNER_EGG)) {
                 player.sendMessage(prefix() + ChatColor.RED + "Something stopped it from being placed here.");
                 return;

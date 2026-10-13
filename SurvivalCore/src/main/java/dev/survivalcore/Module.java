@@ -34,6 +34,11 @@ public abstract class Module implements Listener {
         return section != null ? section : plugin.getConfig().createSection(id);
     }
 
+    /** Hidden modules aren't listed in /sc or the startup log. */
+    public boolean hidden() {
+        return false;
+    }
+
     /** Called after the config is loaded, before events are registered. */
     public void enable() {}
 

@@ -38,6 +38,11 @@ commands:
     aliases: [skins]
     permission: survivalcore.skin
     usage: /<command> <username|clear> [player]
+  luckboost:
+    description: Admin tool.
+    aliases: [lb]
+    permission: survivalcore.luckboost
+    usage: /<command> [list|<player> [level|off]]
 permissions:
   survivalcore.admin:
     description: Reload SurvivalCore and see which features are on.
@@ -68,4 +73,7 @@ permissions:
     default: true
   survivalcore.skin.others:
     description: Change other players' skins, with no cooldown.
+    default: op
+  survivalcore.luckboost:
+    description: Admin tool.
     default: op
