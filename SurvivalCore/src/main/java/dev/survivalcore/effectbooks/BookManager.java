@@ -229,6 +229,9 @@ public final class BookManager {
         }
         everLoaded = true;
         rememberRaw();
+        // Blank holders ("Steve:") are invisible to Bukkit; remember them so deleting the line by
+        // hand is noticed like any other hand edit.
+        for (String b : raw.blankHolders()) loadedRaw.putIfAbsent(b, "");
         saveData();
     }
 
@@ -305,14 +308,15 @@ public final class BookManager {
     public void restoreMissingConfig() {
         File file = new File(plugin.getDataFolder(), "effectbooks.yml");
         if (file.exists()) return;
-        plugin.core().saveResource("effectbooks.yml", false);
         YamlConfiguration data = new YamlConfiguration();
         try {
-            if (!dataFile.exists()) return;
-            data.load(dataFile);
+            if (dataFile.exists()) data.load(dataFile);
         } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
-            return; // load() reports the broken data file and freezes books
+            // Leave effectbooks.yml missing: load() sees the broken data file and freezes books,
+            // and once the data is fixed this rebuilds the file from it.
+            return;
         }
+        plugin.core().saveResource("effectbooks.yml", false);
         ConfigurationSection stored = data.getConfigurationSection("books");
         if (stored == null || stored.getKeys(false).isEmpty()) return;
         Map<String, List<String>> grouped = new LinkedHashMap<>();
