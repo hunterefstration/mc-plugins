@@ -91,8 +91,12 @@ public final class LuckModule extends Module {
     private final File file;
     private final Map<UUID, Integer> levels = new HashMap<>();
     private final Random random = new Random();
-    /** Neighbours of blocks boosted players are breaking, to tell popped-off items from the block's own drops. */
-    private final Map<Block, Map<Block, BlockState>> neighbours = new HashMap<>();
+    /**
+     * Taken just before a boosted player breaks a block: its neighbours (to tell popped-off items
+     * from the block's own drops) and the tool as it was before mining wore it down.
+     */
+    private record BreakSnapshot(Map<Block, BlockState> neighbours, ItemStack tool) {}
+    private final Map<Block, BreakSnapshot> neighbours = new HashMap<>();
 
     public LuckModule(SurvivalCore plugin) {
         super(plugin, "luck-boost", "LuckBoost");
@@ -305,7 +309,8 @@ public final class LuckModule extends Module {
         if (Boolean.FALSE.equals(dead.getWorld().getGameRuleValue(GameRule.DO_MOB_LOOT))) return;
         if (dead instanceof Ageable a && !a.isAdult() && !(dead instanceof Monster)) return;
         // Killed by a charged creeper: the skull it drops isn't loot-table loot; leave it all alone.
-        if (dead.getLastDamageCause() instanceof EntityDamageByEntityEvent hit && hit.getDamager() instanceof Creeper) return;
+        if (dead.getLastDamageCause() instanceof EntityDamageByEntityEvent hit
+                && hit.getDamager() instanceof Creeper creeper && creeper.isPowered()) return;
 
         // Split what dropped into loot-table loot and everything else: worn/held items (each slot
         // matches at most one drop) and an enderman's carried block.
@@ -359,21 +364,24 @@ public final class LuckModule extends Module {
             Block n = event.getBlock().getRelative(f);
             if (!n.getType().isAir()) around.put(n, n.getState());
         }
-        neighbours.put(event.getBlock(), around);
+        neighbours.put(event.getBlock(), new BreakSnapshot(around, event.getPlayer().getInventory().getItemInMainHand().clone()));
         // Normally used straight away by the drop event; never kept past this tick.
         plugin.getServer().getScheduler().runTask(plugin, () -> neighbours.remove(event.getBlock()));
     }
 
-    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
+    /** LOWEST: before other plugins add their own drops, which must never be swapped away. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBlockDrop(BlockDropItemEvent event) {
-        Map<Block, BlockState> around = neighbours.remove(event.getBlock());
+        BreakSnapshot snapshot = neighbours.remove(event.getBlock());
+        Map<Block, BlockState> around = snapshot == null ? null : snapshot.neighbours();
         Player player = event.getPlayer();
         int level = level(player);
         if (level <= 0 || event.getItems().isEmpty()) return;
         BlockState state = event.getBlockState();
         // Containers drop what's inside them; never touch that.
         if (state instanceof InventoryHolder || state instanceof ShulkerBox) return;
-        ItemStack tool = player.getInventory().getItemInMainHand();
+        // Roll with the tool as it was when the block broke (mining may have used up its last durability).
+        ItemStack tool = snapshot != null ? snapshot.tool() : player.getInventory().getItemInMainHand();
 
         List<Collection<ItemStack>> rolls = rolls(level, () -> state.getDrops(tool, player));
         Set<Material> rollTypes = types(rolls);
@@ -382,7 +390,8 @@ public final class LuckModule extends Module {
         if (around != null) {
             for (Map.Entry<Block, BlockState> e : around.entrySet()) {
                 if (e.getKey().getType() == e.getValue().getType()) continue; // still there
-                for (ItemStack d : e.getValue().getDrops()) poppedTypes.add(d.getType());
+                // Several rolls: a crop's seeds or grass's seeds only drop sometimes.
+                for (int r = 0; r < 16; r++) for (ItemStack d : e.getValue().getDrops()) poppedTypes.add(d.getType());
             }
         }
         List<Item> own = new ArrayList<>();

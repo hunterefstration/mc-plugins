@@ -284,11 +284,13 @@ public final class OreGrowthModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return; // e.g. wind charges
         for (Block b : event.blockList()) forget(b);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return;
         for (Block b : event.blockList()) forget(b);
     }
 
@@ -304,5 +306,10 @@ public final class OreGrowthModule extends Module {
 
     private void forget(Block b) {
         if (HOSTS.contains(b.getType())) placed.set(b, false);
+    }
+
+    /** Wind charges and similar explosions list blocks but don't break any. */
+    private static boolean destroysNothing(org.bukkit.ExplosionResult result) {
+        return result == org.bukkit.ExplosionResult.KEEP || result == org.bukkit.ExplosionResult.TRIGGER_BLOCK;
     }
 }

@@ -117,6 +117,8 @@ public class SurvivalCore extends JavaPlugin {
     public void reloadAll() {
         Set<Module> wasOn = new LinkedHashSet<>(enabled);
         disableModules();
+        // Delayed "let this chunk unload again" tasks were just cancelled; release those chunks now.
+        for (org.bukkit.World w : getServer().getWorlds()) w.removePluginChunkTickets(this);
         reloadConfig();
         getConfig().options().copyDefaults(true);
         saveConfig();

@@ -131,6 +131,7 @@ public final class EnderChestModule extends Module {
         openLids.clear();
         viewerChests.clear();
         pendingSaves.clear();
+        for (UUID piglin : new ArrayList<>(angered.keySet())) calmDown(piglin); // their timers are being cancelled
     }
 
     private int rowsFor(Player player) {
@@ -198,10 +199,12 @@ public final class EnderChestModule extends Module {
         sessions.put(owner.getUniqueId(), session);
         session.viewers.add(viewer.getUniqueId());
         if (chest != null) {
-            openLids.merge(chest, 1, Integer::sum);
             viewerChests.put(viewer.getUniqueId(), chest);
-            setLid(chest, true);
-            chest.getWorld().sendGameEvent(viewer, GameEvent.CONTAINER_OPEN, chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
+            if (openLids.merge(chest, 1, Integer::sum) == 1) {
+                // Like vanilla: the lid and sculk-sensor event only for the first one to open it.
+                setLid(chest, true);
+                chest.getWorld().sendGameEvent(viewer, GameEvent.CONTAINER_OPEN, chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
+            }
         }
         return true;
     }
@@ -217,10 +220,12 @@ public final class EnderChestModule extends Module {
             if (left <= 0) {
                 openLids.remove(chest);
                 setLid(chest, false);
-            }
-            if (chest.getWorld() != null) {
-                chest.getWorld().sendGameEvent(event.getPlayer(), GameEvent.CONTAINER_CLOSE,
-                        chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
+                // ...and the close event for the last one, if the chest is still there.
+                if (chest.getWorld() != null && chest.getWorld().isChunkLoaded(chest.getBlockX() >> 4, chest.getBlockZ() >> 4)
+                        && chest.getBlock().getType() == Material.ENDER_CHEST) {
+                    chest.getWorld().sendGameEvent(event.getPlayer(), GameEvent.CONTAINER_CLOSE,
+                            chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
+                }
             }
         }
         save(session);
@@ -272,9 +277,24 @@ public final class EnderChestModule extends Module {
         for (Piglin piglin : player.getWorld().getNearbyEntitiesByType(Piglin.class, player.getLocation(), 16)) {
             if (piglin.getTarget() != null || piglin.isConverting() || !piglin.hasLineOfSight(player)) continue;
             Player target = universal ? nearestTargetable(piglin, player) : player;
-            piglin.setMemory(MemoryKey.ANGRY_AT, target.getUniqueId());
+            UUID id = target.getUniqueId();
+            piglin.setMemory(MemoryKey.ANGRY_AT, id);
+            if (universal) piglin.setMemory(MemoryKey.UNIVERSAL_ANGER, true);
             piglin.setTarget(target);
+            // Vanilla's anger wears off after 30 seconds (600 ticks).
+            angered.put(piglin.getUniqueId(), id);
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> calmDown(piglin.getUniqueId()), 600L);
         }
+    }
+
+    /** Piglins we made angry -> who at, so the anger can be taken off even if the timer is cancelled. */
+    private final Map<UUID, UUID> angered = new HashMap<>();
+
+    private void calmDown(UUID piglinId) {
+        UUID target = angered.remove(piglinId);
+        if (target == null || !(Bukkit.getEntity(piglinId) instanceof Piglin piglin) || !piglin.isValid()) return;
+        if (target.equals(piglin.getMemory(MemoryKey.ANGRY_AT))) piglin.setMemory(MemoryKey.ANGRY_AT, null);
+        piglin.setMemory(MemoryKey.UNIVERSAL_ANGER, null);
     }
 
     private static Player nearestTargetable(Piglin piglin, Player fallback) {
@@ -367,7 +387,9 @@ public final class EnderChestModule extends Module {
         holder.inventory = inv;
         holder.lastVanilla = owner.getEnderChest().getContents().clone();
         cloneAll(holder.lastVanilla);
-        if (fromBec != null) save(holder); // write the imported items out straight away
+        // Write it out straight away: waiting items or an import just moved into the chest must be
+        // saved even if the chest then doesn't open (another plugin cancels it).
+        save(holder);
         return inv;
     }
 

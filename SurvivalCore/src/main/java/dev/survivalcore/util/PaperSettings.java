@@ -68,7 +68,10 @@ public final class PaperSettings {
                 // Only undo our own change (if something else changed it since, leave that alone).
                 Boolean ours = wanted.get(e.getKey());
                 if (ours != null && PaperConfig.get(parts[0], parts[1]) != ours) continue;
-                PaperConfig.set(parts[0], parts[1], e.getValue());
+                // Put back what paper-global.yml says now (it may have been edited since), or the
+                // value from before we changed it if the file can't be read.
+                Boolean inFile = PaperConfig.fileValue(parts[0], parts[1]);
+                PaperConfig.set(parts[0], parts[1], inFile != null ? inFile : e.getValue());
             } catch (ReflectiveOperationException | RuntimeException ignored) {
             }
         }

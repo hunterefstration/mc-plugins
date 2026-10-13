@@ -36,4 +36,29 @@ public final class PaperConfig {
         f.setBoolean(part, value);
         return old;
     }
+
+    /** "unsupportedSettings" -> "unsupported-settings" (how Paper names them in the YAML file). */
+    static String kebab(String camel) {
+        StringBuilder sb = new StringBuilder();
+        for (char c : camel.toCharArray()) {
+            if (Character.isUpperCase(c)) sb.append('-').append(Character.toLowerCase(c));
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** The value currently written in config/paper-global.yml, or null if it can't be read. */
+    public static Boolean fileValue(String section, String name) {
+        java.io.File file = new java.io.File("config", "paper-global.yml");
+        if (!file.isFile()) return null;
+        try {
+            Object root = new org.yaml.snakeyaml.Yaml().load(java.nio.file.Files.readString(file.toPath()));
+            if (root instanceof java.util.Map<?, ?> top && top.get(kebab(section)) instanceof java.util.Map<?, ?> part
+                    && part.get(kebab(name)) instanceof Boolean b) {
+                return b;
+            }
+        } catch (java.io.IOException | RuntimeException ignored) {
+        }
+        return null;
+    }
 }

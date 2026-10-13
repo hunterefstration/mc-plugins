@@ -26,7 +26,16 @@ public final class PlacedBlocks {
 
     private long[] read(Chunk chunk) {
         long[] data = chunk.getPersistentDataContainer().get(key, PersistentDataType.LONG_ARRAY);
-        return data == null ? new long[0] : data;
+        if (data == null) return new long[0];
+        for (int i = 1; i < data.length; i++) {
+            if (data[i - 1] >= data[i]) {
+                // Saved by an older version in placement order: sort it (and drop repeats) once.
+                long[] fixed = Arrays.stream(data).sorted().distinct().toArray();
+                chunk.getPersistentDataContainer().set(key, PersistentDataType.LONG_ARRAY, fixed);
+                return fixed;
+            }
+        }
+        return data;
     }
 
     public boolean contains(Block block) {

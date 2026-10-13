@@ -212,6 +212,25 @@ class StringDupeTest {
     }
 
     @Test
+    void explosionTakingTheFarHookFirstDoesNotDupeAnArmedString() {
+        buildLine(true, false);
+        module.explosion(List.of(block(5, 64, 0), block(2, 64, 0)));
+        assertTrue(module.pendingBlocks().isEmpty());
+    }
+
+    @Test
+    void stringPutBackEarlierInTheExplosionIsThereForTheNextOne() {
+        // 1.21.1: D (disarmed) is put back at once, so when armed S goes the line is whole again,
+        // the hooks re-attach and S is put back too; the line ends up attached.
+        WireState[] states = buildLine(true, false);
+        states[1].disarmed = true;
+        module.explosion(List.of(block(1, 64, 0), block(3, 64, 0)));
+        assertEquals(2, module.pendingBlocks().size());
+        assertTrue(((Tripwire) module.pendingState(block(3, 64, 0))).isAttached());
+        assertTrue(((Tripwire) module.pendingState(block(1, 64, 0))).isAttached());
+    }
+
+    @Test
     void sameStringIsOnlyQueuedOnce() {
         buildLine(true, true);
         module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));

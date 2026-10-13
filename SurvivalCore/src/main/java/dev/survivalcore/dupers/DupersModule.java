@@ -111,11 +111,13 @@ public final class DupersModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return; // e.g. wind charges
         explosion(event.blockList());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return;
         explosion(event.blockList());
     }
 
@@ -129,14 +131,19 @@ public final class DupersModule extends Module {
         for (Block b : blocks) {
             if (b.getType() == Material.TRIPWIRE) {
                 removed(b, false, removal);
+                // A string the hooks put back is there again for the next blocks (as in 1.21.1).
+                if (isPending(b)) continue;
             } else {
-                if (b.getType() == Material.TRIPWIRE_HOOK) detachLine(b, removal);
+                if (b.getType() == Material.TRIPWIRE_HOOK) {
+                    detachLine(b, removal);
+                }
                 for (BlockFace f : HORIZONTAL) {
                     Block n = b.getRelative(f);
-                    // A hook faces away from the block it hangs on.
+                    // A hook faces away from the block it hangs on; it pops off with it.
                     if (n.getType() == Material.TRIPWIRE_HOOK && n.getBlockData() instanceof TripwireHook h
-                            && h.getFacing() == f) {
+                            && h.getFacing() == f && !removal.gone.contains(n)) {
                         detachLine(n, removal);
+                        removal.gone.add(n);
                     }
                 }
             }
@@ -179,8 +186,20 @@ public final class DupersModule extends Module {
         return null;
     }
 
-    private static boolean isString(Block b, Removal removal) {
+    /** A string is there: in the world (and not destroyed earlier in this event), or about to be put back. */
+    private boolean isString(Block b, Removal removal) {
+        if (isPending(b)) return true;
         return b.getType() == Material.TRIPWIRE && !removal.gone.contains(b);
+    }
+
+    /** A hook is there (and wasn't destroyed or popped off earlier in this event). */
+    private static boolean isHook(Block b, Removal removal) {
+        return b.getType() == Material.TRIPWIRE_HOOK && !removal.gone.contains(b);
+    }
+
+    private boolean isPending(Block b) {
+        for (Pending p : pending) if (p.block().equals(b)) return true;
+        return false;
     }
 
     /**
@@ -199,7 +218,7 @@ public final class DupersModule extends Module {
         for (BlockFace dir : new BlockFace[]{BlockFace.SOUTH, BlockFace.WEST}) {
             for (int i = 1; i < MAX_LINE; i++) {
                 Block b = wire.getRelative(dir, i);
-                if (b.getType() == Material.TRIPWIRE_HOOK) {
+                if (isHook(b, removal)) {
                     if (b.getBlockData() instanceof TripwireHook hook && hook.getFacing() == dir.getOppositeFace()) {
                         Boolean result = calculateState(b, hook, i, state, removal);
                         if (result != null && putBackAttached == null) putBackAttached = result;
@@ -227,7 +246,7 @@ public final class DupersModule extends Module {
         int far = 0;
         for (int j = 1; j < MAX_LINE; j++) {
             Block b = hookBlock.getRelative(facing, j);
-            if (b.getType() == Material.TRIPWIRE_HOOK) {
+            if (isHook(b, removal)) {
                 if (b.getBlockData() instanceof TripwireHook o && o.getFacing() == facing.getOppositeFace()) far = j;
                 break;
             }
@@ -243,6 +262,10 @@ public final class DupersModule extends Module {
         // including the one that was just removed (the bug Mojang fixed in 1.21.2).
         removal.attached.put(hookBlock, attached);
         if (far > 0) removal.attached.put(hookBlock.getRelative(facing, far), attached);
+        // Strings already being put back on this line get the new attached state too (vanilla re-sets them all).
+        for (int j = 1; j < far; j++) {
+            if (pendingState(hookBlock.getRelative(facing, j)) instanceof Tripwire t) t.setAttached(attached);
+        }
         return far > removedAt ? attached : null;
     }
 
@@ -284,5 +307,10 @@ public final class DupersModule extends Module {
             if (!canReplace(b, p.explosion())) continue;
             b.setBlockData(p.state(), true);
         }
+    }
+
+    /** Wind charges and similar explosions list blocks but don't break any. */
+    private static boolean destroysNothing(org.bukkit.ExplosionResult result) {
+        return result == org.bukkit.ExplosionResult.KEEP || result == org.bukkit.ExplosionResult.TRIGGER_BLOCK;
     }
 }

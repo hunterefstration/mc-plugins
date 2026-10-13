@@ -252,11 +252,13 @@ public final class VeinMinerModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onExplodeLogs(org.bukkit.event.entity.EntityExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return; // e.g. wind charges
         for (Block b : event.blockList()) forgetLog(b);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplodeLogs(org.bukkit.event.block.BlockExplodeEvent event) {
+        if (destroysNothing(event.getExplosionResult())) return;
         for (Block b : event.blockList()) forgetLog(b);
     }
 
@@ -338,5 +340,10 @@ public final class VeinMinerModule extends Module {
             options.removeIf(o -> !o.startsWith(args[0].toLowerCase(Locale.ROOT)));
             return options;
         }
+    }
+
+    /** Wind charges and similar explosions list blocks but don't break any. */
+    private static boolean destroysNothing(org.bukkit.ExplosionResult result) {
+        return result == org.bukkit.ExplosionResult.KEEP || result == org.bukkit.ExplosionResult.TRIGGER_BLOCK;
     }
 }
