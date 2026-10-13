@@ -539,6 +539,19 @@ class EffectBooksTest {
     }
 
     @Test
+    void deletedConfigIsRebuiltFromSavedBooks() throws Exception {
+        PlayerMock steve = join("Steve");
+        server.getScheduler().performTicks(2);
+        write(steve, "Bob");
+        java.nio.file.Files.delete(new java.io.File(plugin.getDataFolder(), "effectbooks.yml").toPath());
+        plugin.reload();
+        assertFalse(manager.isBroken());
+        assertEquals(List.of("Bob"), manager.find("Steve", PotionEffectType.SPEED).targets());
+        assertNotNull(manager.find("Alex", PotionEffectType.STRENGTH));
+        assertEquals("SPEED", plugin.getConfig().getString("books.Steve"));
+    }
+
+    @Test
     void handEditsSurviveSeveralInGameChanges() throws Exception {
         java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
         String text = java.nio.file.Files.readString(file.toPath());

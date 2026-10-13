@@ -63,9 +63,9 @@ public class EffectBooksModule extends Module {
     @Override
     public void enable() {
         migrateStandalonePlugin();
-        if (!configFile.exists()) plugin.saveResource("effectbooks.yml", false);
         BookManager previous = manager;
         manager = new BookManager(this);
+        manager.restoreMissingConfig();
         manager.load();
         if (manager.isBroken() && previous != null && previous.hasLoaded()) {
             // effectbooks.yml is broken right now: keep running on the books we already had.
@@ -132,6 +132,7 @@ public class EffectBooksModule extends Module {
 
     /** Reloads effectbooks.yml + data and resyncs everyone. */
     public void reload() {
+        manager.restoreMissingConfig();
         manager.load();
         startTask();
         manager.refreshAll();

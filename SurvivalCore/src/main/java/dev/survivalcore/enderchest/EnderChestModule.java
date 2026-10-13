@@ -309,14 +309,32 @@ public final class EnderChestModule extends Module {
         for (Piglin piglin : player.getWorld().getNearbyEntitiesByType(Piglin.class, player.getLocation(), 16)) {
             if (piglin.getTarget() != null || piglin.isConverting() || !piglin.hasLineOfSight(player)) continue;
             Player target = universal ? nearestTargetable(piglin, player) : player;
+            piglin.setTarget(target);
+            // Vanilla's own 30-second anger (wears off by itself, even if this plugin is removed).
+            if (setVanillaAnger(piglin, target.getUniqueId(), universal)) continue;
+            // Fallback if that isn't reachable: set it through the API and time it ourselves.
             piglin.setMemory(MemoryKey.ANGRY_AT, target.getUniqueId());
             if (universal) piglin.setMemory(MemoryKey.UNIVERSAL_ANGER, true);
-            piglin.setTarget(target);
-            // Vanilla's anger wears off after 30 seconds (600 ticks). The end time is kept on the
-            // piglin itself, so it still calms down if its chunk was unloaded meanwhile.
             piglin.getPersistentDataContainer().set(angerUntilKey, PersistentDataType.LONG, piglin.getWorld().getGameTime() + 600);
             piglin.getPersistentDataContainer().set(angerAtKey, PersistentDataType.STRING, target.getUniqueId().toString());
             angered.add(piglin.getUniqueId());
+        }
+    }
+
+    /** PiglinAi.setAngerTarget: ANGRY_AT (and UNIVERSAL_ANGER) with vanilla's 600-tick expiry. */
+    private static boolean setVanillaAnger(Piglin piglin, UUID target, boolean universal) {
+        try {
+            Object handle = piglin.getClass().getMethod("getHandle").invoke(piglin);
+            Object brain = handle.getClass().getMethod("getBrain").invoke(handle);
+            Class<?> type = Class.forName("net.minecraft.world.entity.ai.memory.MemoryModuleType");
+            java.lang.reflect.Method withExpiry = brain.getClass().getMethod("setMemoryWithExpiry", type, Object.class, long.class);
+            java.lang.reflect.Method erase = brain.getClass().getMethod("eraseMemory", type);
+            erase.invoke(brain, type.getField("CANT_REACH_WALK_TARGET_SINCE").get(null));
+            withExpiry.invoke(brain, type.getField("ANGRY_AT").get(null), target, 600L);
+            if (universal) withExpiry.invoke(brain, type.getField("UNIVERSAL_ANGER").get(null), Boolean.TRUE, 600L);
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
         }
     }
 

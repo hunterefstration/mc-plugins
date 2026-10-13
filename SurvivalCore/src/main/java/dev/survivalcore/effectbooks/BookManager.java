@@ -243,7 +243,13 @@ public final class BookManager {
 
     private RawCheck rawCheck() {
         File file = new File(plugin.getDataFolder(), "effectbooks.yml");
-        if (!file.exists()) return new RawCheck(true, Set.of());
+        if (!file.exists()) {
+            if (hasStoredBooks()) {
+                plugin.getLogger().severe("effectbooks.yml is missing but books exist.");
+                return new RawCheck(false, Set.of());
+            }
+            return new RawCheck(true, Set.of());
+        }
         Object root;
         try {
             root = new org.yaml.snakeyaml.Yaml().load(java.nio.file.Files.readString(file.toPath()));
@@ -270,6 +276,10 @@ public final class BookManager {
             plugin.getLogger().severe("effectbooks.yml: 'books:' is empty but books exist. Write 'books: {}' to really delete them all.");
             return new RawCheck(false, Set.of());
         }
+        if (books != null && !(books instanceof Map<?, ?>)) {
+            plugin.getLogger().severe("effectbooks.yml: 'books:' must be holders with their effects, like '  Steve: SPEED'.");
+            return new RawCheck(false, Set.of());
+        }
         Set<String> blank = new HashSet<>();
         if (books instanceof Map<?, ?> m) {
             for (Map.Entry<?, ?> e : m.entrySet()) if (e.getValue() == null) blank.add(String.valueOf(e.getKey()));
@@ -286,6 +296,41 @@ public final class BookManager {
         } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
             return true;
         }
+    }
+
+    /**
+     * effectbooks.yml was deleted or moved: write a fresh one, with the books that are saved in
+     * effectbooks-data.yml filled in, so nothing is lost.
+     */
+    public void restoreMissingConfig() {
+        File file = new File(plugin.getDataFolder(), "effectbooks.yml");
+        if (file.exists()) return;
+        plugin.core().saveResource("effectbooks.yml", false);
+        YamlConfiguration data = new YamlConfiguration();
+        try {
+            if (!dataFile.exists()) return;
+            data.load(dataFile);
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            return; // load() reports the broken data file and freezes books
+        }
+        ConfigurationSection stored = data.getConfigurationSection("books");
+        if (stored == null || stored.getKeys(false).isEmpty()) return;
+        Map<String, List<String>> grouped = new LinkedHashMap<>();
+        for (String key : stored.getKeys(false)) {
+            ConfigurationSection b = stored.getConfigurationSection(key);
+            if (b == null || b.getString("holder") == null || b.getString("effect") == null) continue;
+            int level = b.getInt("level", 1);
+            String spec = b.getString("effect").toUpperCase(Locale.ROOT) + (level > 1 ? ":" + level : "");
+            grouped.computeIfAbsent(b.getString("holder"), k -> new ArrayList<>()).add(spec);
+        }
+        plugin.reloadConfig();
+        ConfigurationSection section = plugin.getConfig().createSection("books");
+        for (Map.Entry<String, List<String>> e : grouped.entrySet()) {
+            section.set(e.getKey(), e.getValue().size() == 1 ? e.getValue().get(0) : e.getValue());
+        }
+        plugin.saveConfig();
+        plugin.getLogger().warning("effectbooks.yml was missing, so it was rebuilt from the saved books ("
+                + grouped.size() + " holder(s)). Nothing was lost.");
     }
 
     /** True while effectbooks.yml or its data file has a YAML error. */
@@ -367,10 +412,14 @@ public final class BookManager {
             Set<String> blank = rawCheck().blankHolders();
             for (String key : loadedRaw.keySet()) {
                 // A holder left blank ("Steve:") reads as missing; that's a typo, not a deletion.
-                if (blank.contains(key)) handEdited.put(key, "");
+                if (blank.contains(key)) {
+                    if (!"".equals(badHolders.get(key))) handEdited.put(key, "");
+                }
                 else if (!section.contains(key, true)) handEdited.put(key, null);
             }
-            for (String key : blank) handEdited.putIfAbsent(key, "");
+            for (String key : blank) {
+                if (!"".equals(badHolders.get(key))) handEdited.putIfAbsent(key, ""); // new since the last load
+            }
         }
         if (section == null) {
             section = config.createSection("books");
