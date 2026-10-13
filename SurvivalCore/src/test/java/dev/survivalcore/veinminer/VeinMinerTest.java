@@ -68,4 +68,23 @@ class VeinMinerTest {
         List<Block> tree = module.findVein(world.getBlockAt(0, 70, 0), module.groupOf(Material.OAK_LOG), 5);
         assertEquals(5, tree.size());
     }
+
+    @Test
+    void onlyNaturalTreesCount() {
+        for (int y = 0; y < 5; y++) world.getBlockAt(10, 70 + y, 10).setType(Material.OAK_LOG);
+        Block bottom = world.getBlockAt(10, 70, 10);
+        List<Block> logs = module.findVein(bottom, module.groupOf(Material.OAK_LOG), 64);
+        assertFalse(VeinMinerModule.isNaturalTree(bottom, logs), "a log pillar with no leaves is a build");
+
+        Block leaf = world.getBlockAt(11, 74, 10);
+        leaf.setType(Material.OAK_LEAVES);
+        org.bukkit.block.data.type.Leaves data = (org.bukkit.block.data.type.Leaves) leaf.getBlockData();
+        data.setPersistent(true);
+        leaf.setBlockData(data);
+        assertFalse(VeinMinerModule.isNaturalTree(bottom, logs), "player-placed leaves don't count");
+
+        data.setPersistent(false);
+        leaf.setBlockData(data);
+        assertTrue(VeinMinerModule.isNaturalTree(bottom, logs));
+    }
 }

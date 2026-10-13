@@ -149,22 +149,41 @@ public final class LuckModule extends Module {
      * if the original is still the best.
      */
     private List<ItemStack> best(Collection<ItemStack> original, int level, Supplier<Collection<ItemStack>> roll) {
+        return pick(original, rolls(level, roll));
+    }
+
+    /** Rolls the table {@code level} times (stops early if the table can't be rolled from here). */
+    private List<Collection<ItemStack>> rolls(int level, Supplier<Collection<ItemStack>> roll) {
+        List<Collection<ItemStack>> rolls = new ArrayList<>();
+        for (int i = 0; i < level; i++) {
+            try {
+                rolls.add(roll.get());
+            } catch (Throwable t) {
+                break;
+            }
+        }
+        return rolls;
+    }
+
+    /** The best of {@code rolls} if it beats {@code original}, else null. */
+    private static List<ItemStack> pick(Collection<ItemStack> original, List<Collection<ItemStack>> rolls) {
         List<ItemStack> best = null;
         double bestScore = LootValue.of(original);
-        for (int i = 0; i < level; i++) {
-            Collection<ItemStack> candidate;
-            try {
-                candidate = roll.get();
-            } catch (Throwable t) {
-                return best; // this loot table can't be re-rolled from here; keep what we have
-            }
-            double score = LootValue.of(candidate);
+        for (Collection<ItemStack> r : rolls) {
+            double score = LootValue.of(r);
             if (score > bestScore) {
                 bestScore = score;
-                best = new ArrayList<>(candidate);
+                best = new ArrayList<>(r);
             }
         }
         return best;
+    }
+
+    /** Every item type any of the rolls produced: what this loot table can give. */
+    private static java.util.Set<org.bukkit.Material> types(List<Collection<ItemStack>> rolls) {
+        java.util.Set<org.bukkit.Material> types = java.util.EnumSet.noneOf(org.bukkit.Material.class);
+        for (Collection<ItemStack> r : rolls) for (ItemStack i : r) if (i != null) types.add(i.getType());
+        return types;
     }
 
     private LootContext context(Location at, float baseLuck, int level, Entity looted, Player player, int looting) {
@@ -260,19 +279,27 @@ public final class LuckModule extends Module {
         Player killer = dead.getKiller();
         int level = level(killer);
         if (level <= 0 || !(dead instanceof Lootable lootable) || lootable.getLootTable() == null) return;
+        // Babies and doMobLoot=false drop nothing from the loot table; don't invent loot for them.
+        if (dead instanceof org.bukkit.entity.Ageable a && !a.isAdult()) return;
+        if (Boolean.FALSE.equals(dead.getWorld().getGameRuleValue(org.bukkit.GameRule.DO_MOB_LOOT))) return;
 
-        // Keep whatever the mob was wearing or holding (it may be a player's item it picked up).
+        int looting = killer.getInventory().getItemInMainHand().getEnchantmentLevel(Enchantment.LOOTING);
+        LootTable table = lootable.getLootTable();
+        LootContext ctx = context(dead.getLocation(), baseLuck(killer, level), level, dead, killer, looting);
+        List<Collection<ItemStack>> rolls = rolls(level, () -> table.populateLoot(random, ctx));
+        java.util.Set<org.bukkit.Material> tableTypes = types(rolls);
+
+        // Only swap what the loot table made. Keep worn/held items (maybe a player's), an enderman's
+        // block, charged-creeper skulls and anything other plugins added.
         List<ItemStack> kept = new ArrayList<>();
         List<ItemStack> fromTable = new ArrayList<>();
         EntityEquipment equipment = dead.getEquipment();
         for (ItemStack drop : event.getDrops()) {
-            if (equipment != null && isEquipment(equipment, drop)) kept.add(drop);
-            else fromTable.add(drop);
+            boolean worn = equipment != null && isEquipment(equipment, drop);
+            if (!worn && tableTypes.contains(drop.getType())) fromTable.add(drop);
+            else kept.add(drop);
         }
-        int looting = killer.getInventory().getItemInMainHand().getEnchantmentLevel(Enchantment.LOOTING);
-        LootTable table = lootable.getLootTable();
-        LootContext ctx = context(dead.getLocation(), baseLuck(killer, level), level, dead, killer, looting);
-        List<ItemStack> best = best(fromTable, level, () -> table.populateLoot(random, ctx));
+        List<ItemStack> best = pick(fromTable, rolls);
         if (best == null) return;
         event.getDrops().clear();
         event.getDrops().addAll(best);
@@ -303,15 +330,25 @@ public final class LuckModule extends Module {
         if (state instanceof InventoryHolder || state instanceof ShulkerBox) return;
         ItemStack tool = player.getInventory().getItemInMainHand();
 
+        List<Collection<ItemStack>> rolls = rolls(level, () -> state.getDrops(tool, player));
+        java.util.Set<org.bukkit.Material> tableTypes = types(rolls);
+        // Only the block's own drops are swapped. Torches, signs, rails, crops... that popped off
+        // the block at the same time are left exactly as they are.
+        List<Item> own = new ArrayList<>();
         List<ItemStack> original = new ArrayList<>();
-        for (Item item : event.getItems()) original.add(item.getItemStack());
-        List<ItemStack> best = best(original, level, () -> state.getDrops(tool, player));
+        for (Item item : event.getItems()) {
+            if (tableTypes.contains(item.getItemStack().getType())) {
+                own.add(item);
+                original.add(item.getItemStack());
+            }
+        }
+        if (own.isEmpty()) return;
+        List<ItemStack> best = pick(original, rolls);
         if (best == null || best.isEmpty()) return;
 
-        List<Item> items = event.getItems();
         int i = 0;
-        for (; i < best.size() && i < items.size(); i++) items.get(i).setItemStack(best.get(i));
-        while (items.size() > best.size()) items.remove(items.size() - 1);
+        for (; i < best.size() && i < own.size(); i++) own.get(i).setItemStack(best.get(i));
+        for (int j = i; j < own.size(); j++) event.getItems().remove(own.get(j));
         if (i < best.size()) {
             Location at = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
             List<ItemStack> extra = new ArrayList<>(best.subList(i, best.size()));

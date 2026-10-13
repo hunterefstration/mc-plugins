@@ -100,6 +100,8 @@ public final class VillagerPickupModule extends Module {
         }
         event.setCancelled(true);
 
+        // A sleeping villager would snap back to its old bed when placed, and leave that bed taken.
+        if (target instanceof Villager sleeper && sleeper.isSleeping()) sleeper.wakeup();
         if (!target.getPassengers().isEmpty()) target.eject();
         if (target.isInsideVehicle()) target.leaveVehicle();
         if (living.isLeashed()) living.setLeashHolder(null);

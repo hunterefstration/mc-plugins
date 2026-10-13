@@ -133,10 +133,36 @@ public final class VeinMinerModule extends Module {
 
         List<Block> vein = findVein(origin, group, isLog ? maxLogs : maxOres);
         if (vein.isEmpty()) return;
+        // Only real trees: a log wall or cabin has no natural leaves touching it.
+        if (isLog && !isNaturalTree(origin, vein)) return;
 
         // Break it next tick, once the first block is gone.
         Location dropAt = origin.getLocation().add(0.5, 0.5, 0.5);
         plugin.getServer().getScheduler().runTask(plugin, () -> breakVein(player, vein, group, dropAt));
+    }
+
+    /** True if any of these logs touches natural (not player-placed) leaves or a nether "wart" canopy. */
+    static boolean isNaturalTree(Block origin, List<Block> logs) {
+        List<Block> all = new ArrayList<>(logs);
+        all.add(origin);
+        for (Block log : all) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        Block n = log.getRelative(dx, dy, dz);
+                        Material t = n.getType();
+                        if (Tag.LEAVES.isTagged(t)) {
+                            if (n.getBlockData() instanceof org.bukkit.block.data.type.Leaves leaves && !leaves.isPersistent()) {
+                                return true;
+                            }
+                        } else if (t == Material.NETHER_WART_BLOCK || t == Material.WARPED_WART_BLOCK) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** Connected blocks of the same group (diagonals count), nearest first, not including the origin. */
@@ -190,7 +216,11 @@ public final class VeinMinerModule extends Module {
         if (!dropsAtFirstBlock) return;
         Location target = active.get(event.getPlayer().getUniqueId());
         if (target == null || target.getWorld() != event.getBlock().getWorld()) return;
-        for (Item item : event.getItems()) item.teleport(target);
+        // These items aren't in the world yet (so they can't be moved); drop copies at the target instead.
+        for (Item item : event.getItems()) {
+            target.getWorld().dropItem(target, item.getItemStack()).setVelocity(new org.bukkit.util.Vector());
+        }
+        event.getItems().clear();
     }
 
     private static boolean aboutToBreak(ItemStack tool) {

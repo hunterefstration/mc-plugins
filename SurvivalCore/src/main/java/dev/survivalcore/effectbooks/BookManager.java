@@ -61,6 +61,10 @@ public final class BookManager {
     /** Books whose config line failed to parse; kept untouched so a typo doesn't wipe their names. */
     private final Map<UUID, Book> dormant = new LinkedHashMap<>();
 
+    /** Lines from effectbooks.yml that didn't parse, kept so rewriting the file never deletes them. */
+    private final Map<String, List<String>> badSpecs = new LinkedHashMap<>();
+    private final Map<String, Object> badHolders = new LinkedHashMap<>();
+
     private boolean refreshQueued;
     private final Set<UUID> warnedFullInventory = new HashSet<>();
 
@@ -101,6 +105,8 @@ public final class BookManager {
 
         books.clear();
         dormant.clear();
+        badSpecs.clear();
+        badHolders.clear();
         boolean configErrors = false;
 
         ConfigurationSection section = config.getConfigurationSection("books");
@@ -108,6 +114,7 @@ public final class BookManager {
             for (String holder : section.getKeys(false)) {
                 if (!Effects.isValidName(holder)) {
                     plugin.getLogger().warning("effectbooks.yml: '" + holder + "' is not a valid username, skipping.");
+                    badHolders.put(holder, section.get(holder));
                     configErrors = true;
                     continue;
                 }
@@ -119,6 +126,7 @@ public final class BookManager {
                     if (parsed == null) {
                         plugin.getLogger().warning("effectbooks.yml: unknown effect '" + spec + "' for " + holder
                                 + ". Books for this line are kept but inactive until it is fixed.");
+                        badSpecs.computeIfAbsent(holder, k -> new ArrayList<>()).add(spec);
                         configErrors = true;
                         continue;
                     }
@@ -193,9 +201,14 @@ public final class BookManager {
         for (Book b : sortedBooks()) {
             grouped.computeIfAbsent(b.holder(), k -> new ArrayList<>()).add(b.spec());
         }
+        // Put back lines that didn't parse, so a typo is never silently deleted (and its names kept).
+        for (Map.Entry<String, List<String>> e : badSpecs.entrySet()) {
+            grouped.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
+        }
         for (Map.Entry<String, List<String>> e : grouped.entrySet()) {
             section.set(e.getKey(), e.getValue().size() == 1 ? e.getValue().get(0) : e.getValue());
         }
+        for (Map.Entry<String, Object> e : badHolders.entrySet()) section.set(e.getKey(), e.getValue());
         plugin.saveConfig();
     }
 
@@ -500,6 +513,7 @@ public final class BookManager {
             if (!expected.isSimilar(contents[slot])) inv.setItem(slot, expected);
         }
 
+        restoreMovedTool(player, !found.isEmpty());
         updateDisplay(player, new ArrayList<>(owed.values()));
     }
 
@@ -536,6 +550,13 @@ public final class BookManager {
     /** Removes every preview from open crafting grids (used on shutdown). */
     public void clearDisplays() {
         for (Player p : Bukkit.getOnlinePlayers()) {
+            // With a chest (or any other screen) open, the inventory's crafting output can't be
+            // reached; close it first so the preview can't be taken once the books are off.
+            InventoryView open = p.getOpenInventory();
+            if (open != null && open.getTopInventory() != null
+                    && open.getTopInventory().getType() != InventoryType.CRAFTING && !booksHeldBy(p).isEmpty()) {
+                p.closeInventory();
+            }
             InventoryView view = p.getOpenInventory();
             if (view != null && view.getTopInventory() instanceof CraftingInventory crafting && isDisplay(crafting.getResult())) crafting.setResult(null);
             PlayerInventory inv = p.getInventory();
@@ -568,19 +589,37 @@ public final class BookManager {
         }
         for (int slot = 9; slot < 36; slot++) {
             if (isEmpty(inv.getItem(slot))) {
-                inv.setItem(slot, inv.getItemInMainHand());
+                ItemStack held = inv.getItemInMainHand();
+                inv.setItem(slot, held);
                 inv.setItemInMainHand(createItem(book));
+                movedTools.put(player.getUniqueId(), new MovedTool(inv.getHeldItemSlot(), slot, held.clone()));
                 return true;
             }
         }
         return false;
     }
 
+    /** Where giveToHand moved a player's held item to, so it can go back afterwards. */
+    private record MovedTool(int handSlot, int storageSlot, ItemStack item) {}
+    private final Map<UUID, MovedTool> movedTools = new HashMap<>();
+
     /** Takes the book back out of the player's hand (it returns to its crafting-slot spot). */
     public void putAway(Player player) {
         PlayerInventory inv = player.getInventory();
         if (bookId(inv.getItemInMainHand()) != null) inv.setItemInMainHand(null);
         syncBooks(player);
+    }
+
+    /** Once the book is put away, the item that made room for it goes back to the player's hand slot. */
+    private void restoreMovedTool(Player player, boolean bookStillOut) {
+        MovedTool moved = movedTools.get(player.getUniqueId());
+        if (moved == null || bookStillOut) return;
+        movedTools.remove(player.getUniqueId());
+        PlayerInventory inv = player.getInventory();
+        if (isEmpty(inv.getItem(moved.handSlot())) && moved.item().isSimilar(inv.getItem(moved.storageSlot()))) {
+            inv.setItem(moved.handSlot(), inv.getItem(moved.storageSlot()));
+            inv.setItem(moved.storageSlot(), null);
+        }
     }
 
     private static boolean isEmpty(ItemStack item) {

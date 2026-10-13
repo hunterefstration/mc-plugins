@@ -100,7 +100,7 @@ public final class EndPortalModule extends Module {
 
         if (wouldComplete(frame)) {
             event.setCancelled(true);
-            event.getPlayer().sendMessage(prefix() + ChatColor.RED + closedMessage());
+            tell(event.getPlayer());
         }
     }
 
@@ -140,14 +140,39 @@ public final class EndPortalModule extends Module {
         };
     }
 
-    /** A portal could already exist (e.g. built before this plugin); don't let anyone through it. */
+    private final java.util.Map<java.util.UUID, Long> lastMessage = new java.util.HashMap<>();
+
+    /**
+     * A portal could already exist (e.g. built before this plugin); don't let anyone through it.
+     * Stopped as soon as they step in, before the server starts the trip (and builds the End platform).
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onEnterPortal(org.bukkit.event.entity.EntityPortalEnterEvent event) {
+        if (event.getPortalType() != org.bukkit.PortalType.ENDER) return;
+        World world = event.getLocation().getWorld();
+        if (world == null || world.getEnvironment() == World.Environment.THE_END || isOpen()) return;
+        if (event.getEntity() instanceof Player p && p.hasPermission("survivalcore.endportal.bypass")) return;
+        event.setCancelled(true);
+        if (event.getEntity() instanceof Player p) tell(p);
+    }
+
+    /** Backup in case something gets past the enter event. */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onPortal(PlayerPortalEvent event) {
         if (event.getCause() != PlayerTeleportEvent.TeleportCause.END_PORTAL) return;
         if (event.getFrom().getWorld() == null || event.getFrom().getWorld().getEnvironment() == World.Environment.THE_END) return;
         if (isOpen() || event.getPlayer().hasPermission("survivalcore.endportal.bypass")) return;
         event.setCancelled(true);
-        event.getPlayer().sendMessage(prefix() + ChatColor.RED + closedMessage());
+        tell(event.getPlayer());
+    }
+
+    /** At most one "closed" message every 3 seconds (portals fire every tick you stand in them). */
+    private void tell(Player player) {
+        long now = System.currentTimeMillis();
+        Long last = lastMessage.get(player.getUniqueId());
+        if (last != null && now - last < 3000) return;
+        lastMessage.put(player.getUniqueId(), now);
+        player.sendMessage(prefix() + ChatColor.RED + closedMessage());
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)

@@ -64,7 +64,7 @@ public final class RevaultingModule extends Module {
                         if (!(state instanceof Vault vault)) continue;
                         Location at = state.getLocation();
                         if (at.distanceSquared(loc) > RANGE * RANGE * 4 || !done.add(at)) continue;
-                        reset(vault, world.getFullTime());
+                        reset(vault, world.getGameTime());
                     }
                 }
             }

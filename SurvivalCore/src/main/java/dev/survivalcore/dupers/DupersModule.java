@@ -15,10 +15,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
-import org.bukkit.event.block.BlockPistonExtendEvent;
-import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
-import org.bukkit.event.player.PlayerBucketEmptyEvent;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -34,7 +31,7 @@ import java.util.Set;
  *   code runs again.</li>
  *   <li><b>String dupers</b>: Mojang removed these in 1.21.2, so there is no switch for them. This
  *   module re-creates the exact 1.21.1 behaviour: when a <i>disarmed</i> string in an attached
- *   hook-to-hook line is destroyed (by water, a piston, an explosion, a player...), the hooks
+ *   hook-to-hook line is destroyed (by flowing water, an explosion, a player...), the hooks
  *   detach and put the string straight back, so the string drops as an item <i>and</i> stays.
  *   Old-style automatic string farms work unchanged.</li>
  * </ul>
@@ -92,16 +89,9 @@ public final class DupersModule extends Module {
         removed(event.getToBlock(), false);
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onPistonExtend(BlockPistonExtendEvent event) {
-        // Paper lists the blocks a piston will break along with the ones it moves.
-        for (Block b : event.getBlocks()) removed(b, false);
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onPistonRetract(BlockPistonRetractEvent event) {
-        for (Block b : event.getBlocks()) removed(b, false);
-    }
+    // Pistons and buckets aren't listed: in 1.21.1 the moving block / placed water immediately
+    // overwrote the string the hooks put back, so they never duped. The tick-end check below also
+    // refuses to overwrite anything but air or flowing liquid, for the same reason.
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBreak(BlockBreakEvent event) {
@@ -118,11 +108,6 @@ public final class DupersModule extends Module {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
         for (Block b : event.blockList()) removed(b, false);
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onBucket(PlayerBucketEmptyEvent event) {
-        removed(event.getBlock(), false);
     }
 
     // ------------------------------------------------------------------ the 1.21.1 logic
@@ -181,6 +166,16 @@ public final class DupersModule extends Module {
         return false;
     }
 
+    private static boolean canReplace(Block b) {
+        Material type = b.getType();
+        if (type.isAir()) return true;
+        if ((type == Material.WATER || type == Material.LAVA)
+                && b.getBlockData() instanceof org.bukkit.block.data.Levelled fluid) {
+            return fluid.getLevel() != 0; // flowing, not a source
+        }
+        return false;
+    }
+
     /** Strings waiting to be put back at the end of this tick (for tests). */
     List<Block> pendingBlocks() {
         List<Block> blocks = new ArrayList<>();
@@ -200,10 +195,12 @@ public final class DupersModule extends Module {
         List<Pending> batch = new ArrayList<>(pending);
         pending.clear();
         for (Pending p : batch) {
-            // Only if it really got destroyed (another plugin could still have stopped it).
-            if (p.block().getType() == Material.TRIPWIRE) continue;
-            if (!p.block().getChunk().isLoaded()) continue;
-            p.block().setBlockData(p.state(), true);
+            Block b = p.block();
+            if (!b.getWorld().isChunkLoaded(b.getX() >> 4, b.getZ() >> 4)) continue;
+            // Only where the string is really gone and nothing else took its place: air (broken,
+            // exploded) or flowing water/lava. Never over a piston's moving block or a water source.
+            if (!canReplace(b)) continue;
+            b.setBlockData(p.state(), true);
         }
     }
 }

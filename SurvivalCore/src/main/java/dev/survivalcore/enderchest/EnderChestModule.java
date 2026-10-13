@@ -59,6 +59,7 @@ public final class EnderChestModule extends Module {
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Map<Location, Integer> openLids = new HashMap<>();
     private Set<String> imported = new HashSet<>();
+    private Set<String> failed = new HashSet<>();
 
     /** One open ender chest, shared by everyone looking at it. */
     private final class Session implements InventoryHolder {
@@ -88,7 +89,9 @@ public final class EnderChestModule extends Module {
     @Override
     public void enable() {
         folder.mkdirs();
-        imported = new HashSet<>(YamlConfiguration.loadConfiguration(importedFile).getStringList("players"));
+        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(importedFile);
+        imported = new HashSet<>(yaml.getStringList("players"));
+        failed = new HashSet<>(yaml.getStringList("failed"));
     }
 
     @Override
@@ -100,6 +103,8 @@ public final class EnderChestModule extends Module {
         sessions.clear();
         for (Location lid : openLids.keySet()) setLid(lid, false);
         openLids.clear();
+        viewerChests.clear();
+        pendingSaves.clear();
     }
 
     private int rowsFor(Player player) {
@@ -139,7 +144,9 @@ public final class EnderChestModule extends Module {
         if (!(event.getPlayer() instanceof Player viewer)) return;
         if (!event.getInventory().equals(owner.getEnderChest())) return;
         event.setCancelled(true);
-        plugin.getServer().getScheduler().runTask(plugin, () -> open(viewer, owner, null));
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (owner.isOnline() && viewer.isOnline()) open(viewer, owner, null);
+        });
     }
 
     private boolean open(Player viewer, Player owner, Location chest) {
@@ -151,7 +158,10 @@ public final class EnderChestModule extends Module {
             session.inventory = inv;
             sessions.put(owner.getUniqueId(), session);
         }
-        viewer.openInventory(session.inventory);
+        if (viewer.openInventory(session.inventory) == null) { // another plugin stopped it
+            if (session.viewers.isEmpty()) sessions.remove(owner.getUniqueId());
+            return false;
+        }
         session.viewers.add(viewer.getUniqueId());
         if (chest != null) {
             openLids.merge(chest, 1, Integer::sum);
@@ -190,6 +200,27 @@ public final class EnderChestModule extends Module {
         sessions.remove(session.owner);
     }
 
+    /** Save a tick after any change, so a crash can't dupe or lose what was moved. */
+    private final Set<UUID> pendingSaves = new HashSet<>();
+
+    private void saveSoon(Session session) {
+        if (!pendingSaves.add(session.owner)) return;
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            pendingSaves.remove(session.owner);
+            if (sessions.get(session.owner) == session) save(session);
+        });
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSessionClick(org.bukkit.event.inventory.InventoryClickEvent event) {
+        if (event.getView().getTopInventory().getHolder() instanceof Session session) saveSoon(session);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSessionDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+        if (event.getView().getTopInventory().getHolder() instanceof Session session) saveSoon(session);
+    }
+
     private static void setLid(Location at, boolean open) {
         if (at.getWorld() == null || !at.getWorld().isChunkLoaded(at.getBlockX() >> 4, at.getBlockZ() >> 4)) return;
         if (!(at.getBlock().getState() instanceof Lidded lidded)) return;
@@ -220,11 +251,16 @@ public final class EnderChestModule extends Module {
             return null;
         }
 
+        boolean failedBefore = failed.contains(owner.getUniqueId().toString());
         Map<Integer, ItemStack> fromBec = importBetterEnderChest(owner);
-        if (fromBec != null) {
+        if (fromBec != null && !failedBefore) {
+            // BetterEnderChest's chest replaces the vanilla one, which it had left stale.
             items.clear();
             int max = fromBec.keySet().stream().mapToInt(Integer::intValue).max().orElse(-1);
             for (int i = 0; i <= max; i++) items.add(fromBec.get(i));
+        } else if (fromBec != null) {
+            // An earlier import failed and they've been using this chest since: keep it, add the old items.
+            items.addAll(fromBec.values());
         }
 
         int rows = rowsFor(owner);
@@ -318,6 +354,8 @@ public final class EnderChestModule extends Module {
             plugin.getLogger().log(Level.SEVERE, "Could not import " + owner.getName() + "'s BetterEnderChest ("
                     + file + "). Their vanilla ender chest is shown instead; the old file is untouched.", e);
             owner.sendMessage(prefix() + ChatColor.RED + "Your old ender chest couldn't be moved over. Tell an admin.");
+            failed.add(id);
+            writeImported();
             return null;
         }
         markImported(id);
@@ -327,8 +365,13 @@ public final class EnderChestModule extends Module {
 
     private void markImported(String id) {
         imported.add(id);
+        writeImported();
+    }
+
+    private void writeImported() {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("players", new ArrayList<>(imported));
+        yaml.set("failed", new ArrayList<>(failed));
         try {
             yaml.save(importedFile);
         } catch (IOException e) {

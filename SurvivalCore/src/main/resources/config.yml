@@ -116,6 +116,8 @@ ore-growth:
   # Only between these distances from the player (blocks).
   min-distance: 6
   max-distance: 24
+  # In the overworld, only at or below this height (keeps it away from builds).
+  overworld-max-y: 40
   # New veins allowed per chunk, ever. Keeps it from filling up around bases.
   max-veins-per-chunk: 4
   vein-size:

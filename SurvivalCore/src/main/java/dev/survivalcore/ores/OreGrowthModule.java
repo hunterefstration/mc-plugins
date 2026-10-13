@@ -57,6 +57,7 @@ public final class OreGrowthModule extends Module {
     private int perChunk;
     private int minVein;
     private int maxVein;
+    private int overworldMaxY;
     private Set<String> disabledWorlds = new HashSet<>();
 
     public OreGrowthModule(SurvivalCore plugin) {
@@ -75,6 +76,7 @@ public final class OreGrowthModule extends Module {
         minVein = Math.max(1, config().getInt("vein-size.min", 1));
         maxVein = Math.max(minVein, config().getInt("vein-size.max", 4));
         disabledWorlds = new HashSet<>(config().getStringList("disabled-worlds"));
+        overworldMaxY = config().getInt("overworld-max-y", 40);
 
         weights.clear();
         loadWeights(Material.STONE, "ores.stone");
@@ -135,6 +137,8 @@ public final class OreGrowthModule extends Module {
             if (d2 > maxRadius * maxRadius || d2 < minRadius * minRadius) continue;
             int x = at.getBlockX() + dx, y = at.getBlockY() + dy, z = at.getBlockZ() + dz;
             if (y <= world.getMinHeight() || y >= world.getMaxHeight() - 1) continue;
+            // Keep it underground in the overworld, away from where people build.
+            if (world.getEnvironment() == World.Environment.NORMAL && y > overworldMaxY) continue;
             if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
             Block b = world.getBlockAt(x, y, z);
             if (HOSTS.contains(b.getType())) return b;
@@ -145,10 +149,7 @@ public final class OreGrowthModule extends Module {
     private void tryGrow(Block origin, ThreadLocalRandom rnd) {
         Material host = origin.getType();
         if (!isHiddenNatural(origin, host)) return;
-        Chunk chunk = origin.getChunk();
-        PersistentDataContainer pdc = chunk.getPersistentDataContainer();
-        int grown = pdc.getOrDefault(grownKey, PersistentDataType.INTEGER, 0);
-        if (grown >= perChunk) return;
+        if (grownIn(origin.getChunk()) >= perChunk) return;
 
         Material ore = pickOre(host, origin.getY(), rnd);
         if (ore == null) return;
@@ -171,8 +172,16 @@ public final class OreGrowthModule extends Module {
                 if (seen.add(n) && n.getWorld().isChunkLoaded(n.getX() >> 4, n.getZ() >> 4)) queue.add(n);
             }
         }
+        // Every chunk the vein reaches into counts it against its limit.
+        Set<Chunk> chunks = new HashSet<>();
+        for (Block b : vein) chunks.add(b.getChunk());
+        for (Chunk c : chunks) if (grownIn(c) >= perChunk) return;
         for (Block b : vein) b.setType(ore, false);
-        pdc.set(grownKey, PersistentDataType.INTEGER, grown + 1);
+        for (Chunk c : chunks) c.getPersistentDataContainer().set(grownKey, PersistentDataType.INTEGER, grownIn(c) + 1);
+    }
+
+    private int grownIn(Chunk chunk) {
+        return chunk.getPersistentDataContainer().getOrDefault(grownKey, PersistentDataType.INTEGER, 0);
     }
 
     /** Every side touches a solid, opaque block, and no player put it there. */
@@ -266,6 +275,24 @@ public final class OreGrowthModule extends Module {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onForm(BlockFormEvent event) {
         if (HOSTS.contains(event.getNewState().getType())) setPlaced(event.getBlock(), true);
+    }
+
+    /** Placed stone moved by pistons stays "placed" at its new spot. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPistonExtend(org.bukkit.event.block.BlockPistonExtendEvent event) {
+        movePlaced(event.getBlocks(), event.getDirection());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPistonRetract(org.bukkit.event.block.BlockPistonRetractEvent event) {
+        movePlaced(event.getBlocks(), event.getDirection());
+    }
+
+    private void movePlaced(List<Block> blocks, BlockFace direction) {
+        List<Block> moving = new ArrayList<>();
+        for (Block b : blocks) if (HOSTS.contains(b.getType()) && isPlaced(b)) moving.add(b);
+        for (Block b : moving) setPlaced(b, false);
+        for (Block b : moving) setPlaced(b.getRelative(direction), true);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

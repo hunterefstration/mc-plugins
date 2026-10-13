@@ -453,6 +453,24 @@ class EffectBooksTest {
     }
 
     @Test
+    void typoSurvivesOtherAdminChanges() {
+        PlayerMock steve = join("Steve");
+        server.getScheduler().performTicks(2);
+        write(steve, "Bob");
+        plugin.getConfig().set("books.Steve", "SPEEED");
+        plugin.saveConfig();
+        plugin.reload();
+
+        manager.create("Herobrine", PotionEffectType.HASTE, 1); // rewrites effectbooks.yml
+        assertEquals("SPEEED", plugin.getConfig().getString("books.Steve"), "the bad line is kept");
+        plugin.reload();
+        plugin.getConfig().set("books.Steve", "SPEED");
+        plugin.saveConfig();
+        plugin.reload();
+        assertEquals(List.of("Bob"), manager.find("Steve", PotionEffectType.SPEED).targets());
+    }
+
+    @Test
     void removingFromConfigDeletesBook() {
         PlayerMock steve = join("Steve");
         PlayerMock bob = join("Bob");

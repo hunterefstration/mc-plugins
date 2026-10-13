@@ -15,8 +15,6 @@ import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.inventory.PrepareItemCraftEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
-import org.bukkit.inventory.CraftingInventory;
-import org.bukkit.inventory.ItemStack;
 
 import java.util.List;
 
@@ -36,17 +34,19 @@ public final class BookSlotListener implements Listener {
         this.manager = plugin.manager();
     }
 
-    /** Vanilla recalculates the output whenever the grid changes; show the book again once it's empty. */
-    @EventHandler(priority = EventPriority.HIGHEST)
+    /**
+     * Vanilla recalculates the output whenever the grid changes; show the book again once it's
+     * empty. Done a tick later on purpose: while shift-crafting, vanilla keeps taking whatever is in
+     * the output as long as it's the same kind of item, so setting it straight away could let the
+     * preview slip into the inventory after crafting book and quills.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onPrepareCraft(PrepareItemCraftEvent event) {
-        CraftingInventory inv = event.getInventory();
-        if (inv.getType() != InventoryType.CRAFTING) return;
+        if (event.getInventory().getType() != InventoryType.CRAFTING) return;
         if (!(event.getView().getPlayer() instanceof Player player)) return;
-        for (ItemStack item : inv.getMatrix()) {
-            if (item != null && !item.getType().isAir()) return;
-        }
-        List<Book> held = manager.booksHeldBy(player);
-        if (!held.isEmpty()) inv.setResult(manager.displayItem(held));
+        plugin.getServer().getScheduler().runTask(plugin.core(), () -> {
+            if (player.isOnline()) manager.updateDisplay(player, manager.booksHeldBy(player));
+        });
     }
 
     @EventHandler(priority = EventPriority.LOWEST)

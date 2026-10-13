@@ -49,7 +49,8 @@ when that grid is empty, so it never gets in the way of crafting, and nobody els
 Mining one ore or log breaks the whole connected vein or tree, **whether you're sneaking or not**.
 - Ores: coal, iron, copper, gold, redstone, lapis, diamond, emerald, quartz and ancient debris. Deepslate and normal
   ores count as the same vein.
-- Trees: any log or stem, and only with an axe. Up to 64 ores or 256 logs.
+- Trees: any log or stem, and only with an axe. Up to 64 ores or 256 logs. Only **natural trees** are chopped (the
+  logs must touch natural leaves), so log cabins and log walls are never torn down.
 - Every block is broken as if you mined it yourself, so Fortune, Silk Touch, Unbreaking, XP and CoreProtect logging
   all work.
 - It stops before your tool breaks, and drops land at the block you mined.
@@ -83,8 +84,9 @@ The End is **closed until you open it**:
   this is the real vanilla code running.
 - **String dupers** work again. Mojang removed string duping in 1.21.2, so no Paper setting can restore it.
   SurvivalCore re-creates the exact 1.21.1 rule: when a *disarmed* string in an attached hook-to-hook line is
-  destroyed (by water, a piston, an explosion, a player, shears...), the hooks detach and put the string back.
-  You get the dropped string and the string stays. Old automatic string farms work as they did.
+  destroyed (by flowing water, an explosion, a player, shears...), the hooks detach and put the string back.
+  You get the dropped string and the string stays. Old automatic string farms work as they did. As in 1.21.1,
+  a piston or a placed bucket of water destroying the string doesn't dupe it.
 - Optional, off by default: TNT/carpet/rail duping and sand/gravel (end portal) duping.
 
 ### Attribute swapping
@@ -119,6 +121,7 @@ You can add an optional cooldown in ticks.
 Hidden stone, deepslate and netherrack near players sometimes turns into a small ore vein.
 - Only blocks that are completely enclosed (nothing see-through on any side) can change, so nobody sees it happen.
 - Blocks a player placed, and stone made by lava and water (generators), never change.
+- In the overworld it only happens at or below y=40 (`overworld-max-y`), away from where people build.
 - Ores follow vanilla heights, so diamonds, redstone, gold and lapis only appear deep down. Netherrack gives quartz,
   nether gold and rarely ancient debris.
 - Each chunk only ever gets a few new veins (`max-veins-per-chunk`). The ore mix and rates are in `config.yml`.
