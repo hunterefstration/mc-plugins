@@ -516,6 +516,29 @@ class EffectBooksTest {
     }
 
     @Test
+    void blankHolderThenInGameChangeKeepsTheBook() throws Exception {
+        PlayerMock steve = join("Steve");
+        server.getScheduler().performTicks(2);
+        write(steve, "Bob");
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
+        String text = java.nio.file.Files.readString(file.toPath());
+        java.nio.file.Files.writeString(file.toPath(), text.replace("Steve: SPEED", "Steve:"));
+        manager.create("Herobrine", PotionEffectType.HASTE, 1); // in-game change before /eb reload
+        java.nio.file.Files.writeString(file.toPath(),
+                java.nio.file.Files.readString(file.toPath()).replaceAll("Steve: ''|Steve: \"\"", "Steve: SPEED"));
+        plugin.reload();
+        assertEquals(List.of("Bob"), manager.find("Steve", PotionEffectType.SPEED).targets());
+    }
+
+    @Test
+    void emptiedBooksBlocksInGameChanges() throws Exception {
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
+        String text = java.nio.file.Files.readString(file.toPath());
+        java.nio.file.Files.writeString(file.toPath(), text.substring(0, text.indexOf("\nbooks:\n") + 8));
+        assertThrows(IllegalArgumentException.class, () -> manager.create("Herobrine", PotionEffectType.HASTE, 1));
+    }
+
+    @Test
     void handEditsSurviveSeveralInGameChanges() throws Exception {
         java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
         String text = java.nio.file.Files.readString(file.toPath());

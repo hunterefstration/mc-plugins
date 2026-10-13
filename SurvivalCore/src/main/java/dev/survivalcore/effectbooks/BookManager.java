@@ -64,7 +64,7 @@ public final class BookManager {
     private final Map<UUID, Book> dormant = new LinkedHashMap<>();
 
     /** Data entries that couldn't be read (unknown effect...), written back untouched. */
-    private final Map<String, Map<String, Object>> badData = new LinkedHashMap<>();
+    private final Map<String, Object> badData = new LinkedHashMap<>();
 
     private static Map<String, Object> toMap(ConfigurationSection section) {
         Map<String, Object> map = new LinkedHashMap<>();
@@ -128,7 +128,11 @@ public final class BookManager {
         if (dataBooks != null) {
             for (String key : dataBooks.getKeys(false)) {
                 ConfigurationSection s = dataBooks.getConfigurationSection(key);
-                if (s == null) continue;
+                if (s == null) {
+                    plugin.getLogger().warning("Keeping unreadable book entry '" + key + "' in effectbooks-data.yml as it is.");
+                    badData.put(key, dataBooks.get(key));
+                    continue;
+                }
                 try {
                     PotionEffectType effect = Effects.parse(s.getString("effect"));
                     String holder = s.getString("holder");
@@ -246,7 +250,14 @@ public final class BookManager {
         } catch (IOException | RuntimeException e) {
             return new RawCheck(true, Set.of()); // Bukkit already reported real syntax errors
         }
-        if (!(root instanceof Map<?, ?> top)) return new RawCheck(true, Set.of());
+        if (!(root instanceof Map<?, ?> top)) {
+            // An empty (or comments-only) file has no books at all.
+            if (hasStoredBooks()) {
+                plugin.getLogger().severe("effectbooks.yml has no 'books:' section but books exist. Write 'books: {}' to really delete them all.");
+                return new RawCheck(false, Set.of());
+            }
+            return new RawCheck(true, Set.of());
+        }
         for (Object key : top.keySet()) {
             String k = String.valueOf(key);
             if (!SETTINGS.contains(k) && Effects.isValidName(k)) {
@@ -255,7 +266,7 @@ public final class BookManager {
             }
         }
         Object books = top.get("books");
-        if (top.containsKey("books") && books == null && hasStoredBooks()) {
+        if (books == null && hasStoredBooks()) {
             plugin.getLogger().severe("effectbooks.yml: 'books:' is empty but books exist. Write 'books: {}' to really delete them all.");
             return new RawCheck(false, Set.of());
         }
@@ -283,12 +294,22 @@ public final class BookManager {
     }
 
     private void requireWritable() {
-        if (!broken && !plugin.configFileParses()) {
+        if (!broken && (!plugin.configFileParses() || !rawCheck().ok())) {
             broken = true;
             plugin.getLogger().severe("effectbooks.yml was edited and now has an error. Fix it and run /eb reload.");
         }
         if (broken) {
             throw new IllegalArgumentException("effectbooks.yml (or its data file) has an error. Fix it and run /eb reload first.");
+        }
+    }
+
+    /** Whether an in-game change can be saved right now (checks the files without throwing). */
+    public boolean canWrite() {
+        try {
+            requireWritable();
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
         }
     }
 
@@ -313,7 +334,10 @@ public final class BookManager {
             data.set(path + ".level", b.level());
             data.set(path + ".targets", new ArrayList<>(b.targets()));
         }
-        for (Map.Entry<String, Map<String, Object>> e : badData.entrySet()) data.createSection("books." + e.getKey(), e.getValue());
+        for (Map.Entry<String, Object> e : badData.entrySet()) {
+            if (e.getValue() instanceof Map<?, ?> m) data.createSection("books." + e.getKey(), m);
+            else data.set("books." + e.getKey(), e.getValue());
+        }
         try {
             data.save(dataFile);
         } catch (IOException e) {
@@ -340,7 +364,13 @@ public final class BookManager {
                 if (now instanceof ConfigurationSection) continue;
                 if (!java.util.Objects.equals(now, loadedRaw.get(key))) handEdited.put(key, now);
             }
-            for (String key : loadedRaw.keySet()) if (!section.contains(key)) handEdited.put(key, null);
+            Set<String> blank = rawCheck().blankHolders();
+            for (String key : loadedRaw.keySet()) {
+                // A holder left blank ("Steve:") reads as missing; that's a typo, not a deletion.
+                if (blank.contains(key)) handEdited.put(key, "");
+                else if (!section.contains(key, true)) handEdited.put(key, null);
+            }
+            for (String key : blank) handEdited.putIfAbsent(key, "");
         }
         if (section == null) {
             section = config.createSection("books");
@@ -828,7 +858,15 @@ public final class BookManager {
         for (String n : before) beforeLower.add(n.toLowerCase(Locale.ROOT));
         Set<String> writtenLower = new HashSet<>();
         for (String n : written) writtenLower.add(n.toLowerCase(Locale.ROOT));
-        List<String> result = new ArrayList<>(written);
+        Set<String> nowLower = new HashSet<>();
+        for (String n : book.targets()) nowLower.add(n.toLowerCase(Locale.ROOT));
+        List<String> result = new ArrayList<>();
+        for (String n : written) {
+            String lower = n.toLowerCase(Locale.ROOT);
+            // Erased by someone else after they opened it (it was there before and is gone now).
+            if (beforeLower.contains(lower) && !nowLower.contains(lower)) continue;
+            result.add(n);
+        }
         for (String current : book.targets()) {
             String lower = current.toLowerCase(Locale.ROOT);
             // Added by someone else after they opened it, and not already in what they wrote.

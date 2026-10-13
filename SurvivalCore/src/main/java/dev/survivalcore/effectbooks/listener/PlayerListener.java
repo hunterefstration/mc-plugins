@@ -58,7 +58,7 @@ public final class PlayerListener implements Listener {
             manager.queueRefresh();
             return;
         }
-        if (manager.isBroken()) {
+        if (manager.isBroken() || !manager.canWrite()) {
             event.setCancelled(true);
             player.sendMessage(plugin.prefix() + ChatColor.RED + "Effect books are being fixed by an admin. Try again soon.");
             return;
@@ -89,7 +89,13 @@ public final class PlayerListener implements Listener {
         if (book == null || !book.isHolder(player.getName()) || manager.isBroken()) return;
 
         List<String> names = BookManager.parsePages(event.getNewBookMeta()).names();
-        manager.setTargets(book, names);
+        try {
+            manager.setTargets(book, names);
+        } catch (IllegalArgumentException e) {
+            player.sendMessage(plugin.prefix() + ChatColor.RED + "Effect books are being fixed by an admin. Try again soon.");
+            manager.queueRefresh();
+            return;
+        }
         manager.finishEdit(player, book);
         // Done writing: the book goes back to its spot in the crafting slot.
         plugin.getServer().getScheduler().runTaskLater(plugin.core(), () -> manager.putAway(player), 1L);

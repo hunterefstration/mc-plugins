@@ -73,8 +73,14 @@ public final class VillagerPickupModule extends Module {
      * Villagers placed since the world was last saved. If the server crashes before that, the
      * villager is put back from this record (the item is already used up).
      */
-    private record Placed(UUID entity, UUID world, int x, int y, int z, String data) {}
+    private record Placed(UUID entity, UUID world, int x, int y, int z, String data, boolean fromLastRun) {}
     private final Map<UUID, Placed> placed = new HashMap<>();
+    /**
+     * Villagers picked up whose old spot hasn't been saved yet: if the server crashes, the old copy
+     * loads again there and is removed (even if its item was placed already).
+     */
+    private record Spot(UUID world, int chunkX, int chunkZ) {}
+    private final Map<UUID, Spot> pickedUp = new HashMap<>();
     private final Set<UUID> saveScheduled = new HashSet<>();
     private final Set<EntityType> allowed = new HashSet<>();
     private boolean requireSneak;
@@ -102,8 +108,20 @@ public final class VillagerPickupModule extends Module {
         }
         tickets.clear();
         placed.clear();
+        pickedUp.clear();
         saveScheduled.clear();
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(ticketFile);
+        var pickedSection = yaml.getConfigurationSection("picked");
+        if (pickedSection != null) {
+            for (String key : pickedSection.getKeys(false)) {
+                var p = pickedSection.getConfigurationSection(key);
+                try {
+                    pickedUp.put(UUID.fromString(key), new Spot(UUID.fromString(p.getString("world")),
+                            p.getInt("chunk-x"), p.getInt("chunk-z")));
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
         var placedSection = yaml.getConfigurationSection("placed");
         if (placedSection != null) {
             for (String key : placedSection.getKeys(false)) {
@@ -111,7 +129,7 @@ public final class VillagerPickupModule extends Module {
                 try {
                     placed.put(UUID.fromString(key), new Placed(UUID.fromString(p.getString("entity")),
                             UUID.fromString(p.getString("world")), p.getInt("x"), p.getInt("y"), p.getInt("z"),
-                            p.getString("data")));
+                            p.getString("data"), true));
                 } catch (RuntimeException ignored) {
                 }
             }
@@ -126,12 +144,21 @@ public final class VillagerPickupModule extends Module {
             }
         }
         // Chunks loaded before this ran (spawn chunks, forceloaded ones) get the same checks.
-        for (org.bukkit.World w : Bukkit.getWorlds()) checkLoaded(w.getEntities());
+        for (org.bukkit.World w : Bukkit.getWorlds()) {
+            checkLoaded(w.getEntities());
+            for (org.bukkit.Chunk c : w.getLoadedChunks()) recoverPlaced(c);
+        }
     }
 
     private void saveTickets() {
         YamlConfiguration yaml = new YamlConfiguration();
         tickets.forEach((t, e) -> yaml.set("tickets." + t, e.toString()));
+        pickedUp.forEach((e, spot) -> {
+            String path = "picked." + e;
+            yaml.set(path + ".world", spot.world().toString());
+            yaml.set(path + ".chunk-x", spot.chunkX());
+            yaml.set(path + ".chunk-z", spot.chunkZ());
+        });
         placed.forEach((t, p) -> {
             String path = "placed." + t;
             yaml.set(path + ".entity", p.entity().toString());
@@ -199,13 +226,16 @@ public final class VillagerPickupModule extends Module {
         }
         UUID ticket = UUID.randomUUID();
         tickets.put(ticket, target.getUniqueId());
+        Location was = target.getLocation();
+        pickedUp.put(target.getUniqueId(), new Spot(was.getWorld().getUID(), was.getBlockX() >> 4, was.getBlockZ() >> 4));
         saveTickets();
         ItemStack item = createItem(target, data, ticket);
         target.remove();
         player.getInventory().addItem(item);
-        // Save the player now (cheap). If the server crashes before the villager's chunk is saved,
-        // the villager loads again, sees its ticket is out, and is removed: the item is the real one.
+        // Save the player now (cheap) and the world shortly. If the server crashes before the
+        // villager's old spot is saved, the old copy loads again and is removed: the item is the real one.
         player.saveData();
+        saveWorldSoon(was.getWorld());
         player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.6f, 0.8f);
     }
 
@@ -338,7 +368,9 @@ public final class VillagerPickupModule extends Module {
             // A leftover copy (left by a crash before its removal was saved) goes: the item is the real one.
             Entity leftover = Bukkit.getEntity(entity.getUniqueId());
             if (leftover != null) leftover.remove();
-            if (Bukkit.getEntity(entity.getUniqueId()) != null) {
+            // While its old spot isn't saved yet, the placed one gets a new UUID, so an old copy
+            // that turns up after a crash can be told apart and removed.
+            if (pickedUp.containsKey(entity.getUniqueId()) || Bukkit.getEntity(entity.getUniqueId()) != null) {
                 entity = Bukkit.getUnsafe().deserializeEntity(data, target.getWorld(), false);
             }
             if (!entity.spawnAt(at, CreatureSpawnEvent.SpawnReason.SPAWNER_EGG)) {
@@ -355,7 +387,7 @@ public final class VillagerPickupModule extends Module {
         removeFromHand(player, event.getHand());
         tickets.remove(ticket);
         placed.put(ticket, new Placed(entity.getUniqueId(), target.getWorld().getUID(), at.getBlockX(), at.getBlockY(),
-                at.getBlockZ(), java.util.Base64.getEncoder().encodeToString(data)));
+                at.getBlockZ(), java.util.Base64.getEncoder().encodeToString(data), false));
         saveTickets();
         player.saveData();
         saveWorldSoon(target.getWorld());
@@ -397,15 +429,22 @@ public final class VillagerPickupModule extends Module {
         });
     }
 
-    /** One world save shortly after placements (coalesced, so placing many villagers costs one save). */
+    /** One world save shortly after pickups/placements (coalesced, so many of them cost one save). */
     private void saveWorldSoon(org.bukkit.World world) {
         if (!saveScheduled.add(world.getUID())) return;
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
             saveScheduled.remove(world.getUID());
-            world.save();
-            // Those villagers are on disk now.
-            if (placed.values().removeIf(p -> p.world().equals(world.getUID()))) saveTickets();
+            saveNow(world);
         }, 200L);
+    }
+
+    /** Saves the world (waiting for the files to be written) and forgets what is now safely on disk. */
+    private void saveNow(org.bukkit.World world) {
+        world.save(true);
+        UUID id = world.getUID();
+        boolean changed = placed.values().removeIf(p -> p.world().equals(id) && !p.fromLastRun());
+        changed |= pickedUp.values().removeIf(spot -> spot.world().equals(id) && world.isChunkLoaded(spot.chunkX(), spot.chunkZ()));
+        if (changed) saveTickets();
     }
 
     @Override
@@ -413,20 +452,27 @@ public final class VillagerPickupModule extends Module {
         // Pending saves are about to be cancelled; do them now.
         for (UUID id : new ArrayList<>(saveScheduled)) {
             org.bukkit.World w = Bukkit.getWorld(id);
-            if (w != null) {
-                w.save();
-                placed.values().removeIf(p -> p.world().equals(id));
-            }
+            if (w != null) saveNow(w);
         }
         saveScheduled.clear();
         saveTickets();
+    }
+
+    /** A chunk being unloaded is saved: old spots of picked-up villagers in it are safe now. */
+    @EventHandler
+    public void onEntitiesUnload(org.bukkit.event.world.EntitiesUnloadEvent event) {
+        UUID world = event.getWorld().getUID();
+        int cx = event.getChunk().getX(), cz = event.getChunk().getZ();
+        if (pickedUp.values().removeIf(spot -> spot.world().equals(world) && spot.chunkX() == cx && spot.chunkZ() == cz)) {
+            saveTickets();
+        }
     }
 
     /** A placed villager that's saved or gone for real no longer needs recovering. */
     @EventHandler
     public void onEntityRemoved(EntityRemoveEvent event) {
         // Unloaded (saved with its chunk), killed, despawned...: nothing to recover any more.
-        if (placed.values().removeIf(p -> p.entity().equals(event.getEntity().getUniqueId()))) saveTickets();
+        if (placed.values().removeIf(p -> p.entity().equals(event.getEntity().getUniqueId()) && !p.fromLastRun())) saveTickets();
     }
 
     @EventHandler
@@ -440,10 +486,14 @@ public final class VillagerPickupModule extends Module {
      * its item also exists; the item is the real one, so the leftover goes.
      */
     private void checkLoaded(List<Entity> entities) {
-        if (tickets.isEmpty()) return;
-        Set<UUID> pickedUp = new HashSet<>(tickets.values());
+        if (tickets.isEmpty() && pickedUp.isEmpty()) return;
+        Set<UUID> inItems = new HashSet<>(tickets.values());
         for (Entity e : entities) {
-            if (pickedUp.contains(e.getUniqueId()) && allowed.contains(e.getType())) e.remove();
+            if (!allowed.contains(e.getType())) continue;
+            Spot spot = pickedUp.get(e.getUniqueId());
+            boolean oldCopy = spot != null && spot.world().equals(e.getWorld().getUID())
+                    && spot.chunkX() == (e.getLocation().getBlockX() >> 4) && spot.chunkZ() == (e.getLocation().getBlockZ() >> 4);
+            if (inItems.contains(e.getUniqueId()) || oldCopy) e.remove();
         }
     }
 
@@ -462,12 +512,21 @@ public final class VillagerPickupModule extends Module {
                 org.bukkit.World w = Bukkit.getWorld(still.world());
                 if (w == null) return;
                 try {
-                    Entity back = Bukkit.getUnsafe().deserializeEntity(java.util.Base64.getDecoder().decode(still.data()), w, true);
-                    back.spawnAt(new Location(w, still.x() + 0.5, still.y(), still.z() + 0.5), CreatureSpawnEvent.SpawnReason.CUSTOM);
+                    byte[] bytes = java.util.Base64.getDecoder().decode(still.data());
+                    Entity back = Bukkit.getUnsafe().deserializeEntity(bytes, w, true);
+                    Location at = new Location(w, still.x() + 0.5, still.y(), still.z() + 0.5);
+                    if (!back.spawnAt(at, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
+                        back = Bukkit.getUnsafe().deserializeEntity(bytes, w, false);
+                        if (!back.spawnAt(at, CreatureSpawnEvent.SpawnReason.CUSTOM)) throw new IllegalStateException("spawn was cancelled");
+                    }
                     plugin.getLogger().info("Put back a villager that was placed just before the server stopped unexpectedly.");
+                    placed.put(ticket, new Placed(back.getUniqueId(), still.world(), still.x(), still.y(), still.z(), still.data(), false));
+                    saveTickets();
                     saveWorldSoon(w);
                 } catch (Throwable t) {
-                    plugin.getLogger().log(Level.WARNING, "Could not put back a villager placed before a crash", t);
+                    placed.put(ticket, still); // keep it, try again next time the chunk loads
+                    saveTickets();
+                    plugin.getLogger().log(Level.WARNING, "Could not put back a villager placed before a crash; will retry", t);
                 }
             }, 40L);
         }

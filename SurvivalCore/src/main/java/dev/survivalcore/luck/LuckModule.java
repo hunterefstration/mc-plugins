@@ -386,19 +386,19 @@ public final class LuckModule extends Module {
         List<Collection<ItemStack>> rolls = rolls(level, () -> state.getDrops(tool, player));
         Set<Material> rollTypes = types(rolls);
         // What popped off neighbours that broke along with it (a torch on the ore, a rail on top...).
-        Set<Material> poppedTypes = EnumSet.noneOf(Material.class);
+        boolean somethingPopped = false;
         if (around != null) {
             for (Map.Entry<Block, BlockState> e : around.entrySet()) {
-                if (e.getKey().getType() == e.getValue().getType()) continue; // still there
-                // Several rolls: a crop's seeds or grass's seeds only drop sometimes.
-                for (int r = 0; r < 16; r++) for (ItemStack d : e.getValue().getDrops()) poppedTypes.add(d.getType());
+                if (e.getKey().getType() != e.getValue().getType()) somethingPopped = true;
             }
         }
         List<Item> own = new ArrayList<>();
         List<ItemStack> original = new ArrayList<>();
         for (Item item : event.getItems()) {
             Material type = item.getItemStack().getType();
-            if (poppedTypes.contains(type) && !rollTypes.contains(type)) continue; // a neighbour's drop
+            // If something broke along with it, only item types this block can drop are its own;
+            // anything else came off the neighbour (however lucky its roll was) and is left alone.
+            if (somethingPopped && !rollTypes.contains(type)) continue;
             own.add(item);
             original.add(item.getItemStack());
         }

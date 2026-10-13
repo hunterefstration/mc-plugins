@@ -76,6 +76,8 @@ public final class EnderChestModule extends Module {
     private final NamespacedKey pendingKey;
     private final NamespacedKey importedKey;
     private final NamespacedKey importFailedKey;
+    private final NamespacedKey angerUntilKey;
+    private final NamespacedKey angerAtKey;
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Map<Location, Integer> openLids = new HashMap<>();
     private final Map<UUID, Location> viewerChests = new HashMap<>();
@@ -110,12 +112,42 @@ public final class EnderChestModule extends Module {
         this.pendingKey = new NamespacedKey(plugin, "ender_chest_waiting");
         this.importedKey = new NamespacedKey(plugin, "ender_chest_bec_imported");
         this.importFailedKey = new NamespacedKey(plugin, "ender_chest_bec_failed");
+        this.angerUntilKey = new NamespacedKey(plugin, "piglin_anger_until");
+        this.angerAtKey = new NamespacedKey(plugin, "piglin_anger_at");
+        // Always registered (even with this feature off): piglins we angered calm down when they
+        // load after their time is up, instead of staying angry forever.
+        plugin.getServer().getPluginManager().registerEvents(new org.bukkit.event.Listener() {
+            @EventHandler
+            public void onLoad(org.bukkit.event.world.EntitiesLoadEvent event) {
+                boolean on = plugin.isEnabled(EnderChestModule.this);
+                for (org.bukkit.entity.Entity e : event.getEntities()) {
+                    if (!(e instanceof Piglin piglin)) continue;
+                    if (!calmIfDue(piglin, !on) && on) angered.add(piglin.getUniqueId());
+                }
+            }
+        }, plugin);
         plugin.bind("enderchest", this, new EnderChestCommand());
+    }
+
+    /** Switched off in config.yml: nothing will check the timers, so calm every piglin we angered now. */
+    @Override
+    public void turnedOff() {
+        for (org.bukkit.World w : Bukkit.getWorlds()) {
+            for (Piglin piglin : w.getEntitiesByClass(Piglin.class)) calmIfDue(piglin, true);
+        }
     }
 
     @Override
     public void enable() {
-        validityTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::checkStillValid, 10L, 10L);
+        for (org.bukkit.World w : Bukkit.getWorlds()) {
+            for (Piglin piglin : w.getEntitiesByClass(Piglin.class)) {
+                if (piglin.getPersistentDataContainer().has(angerUntilKey, PersistentDataType.LONG)) angered.add(piglin.getUniqueId());
+            }
+        }
+        validityTask = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            checkStillValid();
+            checkAnger();
+        }, 10L, 10L);
     }
 
     @Override
@@ -131,7 +163,7 @@ public final class EnderChestModule extends Module {
         openLids.clear();
         viewerChests.clear();
         pendingSaves.clear();
-        for (UUID piglin : new ArrayList<>(angered.keySet())) calmDown(piglin); // their timers are being cancelled
+        angered.clear(); // picked up again on enable (their end time is stored on them)
     }
 
     private int rowsFor(Player player) {
@@ -277,24 +309,46 @@ public final class EnderChestModule extends Module {
         for (Piglin piglin : player.getWorld().getNearbyEntitiesByType(Piglin.class, player.getLocation(), 16)) {
             if (piglin.getTarget() != null || piglin.isConverting() || !piglin.hasLineOfSight(player)) continue;
             Player target = universal ? nearestTargetable(piglin, player) : player;
-            UUID id = target.getUniqueId();
-            piglin.setMemory(MemoryKey.ANGRY_AT, id);
+            piglin.setMemory(MemoryKey.ANGRY_AT, target.getUniqueId());
             if (universal) piglin.setMemory(MemoryKey.UNIVERSAL_ANGER, true);
             piglin.setTarget(target);
-            // Vanilla's anger wears off after 30 seconds (600 ticks).
-            angered.put(piglin.getUniqueId(), id);
-            plugin.getServer().getScheduler().runTaskLater(plugin, () -> calmDown(piglin.getUniqueId()), 600L);
+            // Vanilla's anger wears off after 30 seconds (600 ticks). The end time is kept on the
+            // piglin itself, so it still calms down if its chunk was unloaded meanwhile.
+            piglin.getPersistentDataContainer().set(angerUntilKey, PersistentDataType.LONG, piglin.getWorld().getGameTime() + 600);
+            piglin.getPersistentDataContainer().set(angerAtKey, PersistentDataType.STRING, target.getUniqueId().toString());
+            angered.add(piglin.getUniqueId());
         }
     }
 
-    /** Piglins we made angry -> who at, so the anger can be taken off even if the timer is cancelled. */
-    private final Map<UUID, UUID> angered = new HashMap<>();
+    /** Piglins we made angry that are still loaded (checked every half second). */
+    private final Set<UUID> angered = new HashSet<>();
 
-    private void calmDown(UUID piglinId) {
-        UUID target = angered.remove(piglinId);
-        if (target == null || !(Bukkit.getEntity(piglinId) instanceof Piglin piglin) || !piglin.isValid()) return;
-        if (target.equals(piglin.getMemory(MemoryKey.ANGRY_AT))) piglin.setMemory(MemoryKey.ANGRY_AT, null);
+    private void checkAnger() {
+        for (UUID id : new ArrayList<>(angered)) {
+            if (!(Bukkit.getEntity(id) instanceof Piglin piglin) || !piglin.isValid()) {
+                angered.remove(id); // unloaded: checked again when it loads
+                continue;
+            }
+            if (calmIfDue(piglin, false)) angered.remove(id);
+        }
+    }
+
+    /** Takes our anger off a piglin once it's due (or right away). Returns true when done. */
+    private boolean calmIfDue(Piglin piglin, boolean now) {
+        PersistentDataContainer pdc = piglin.getPersistentDataContainer();
+        Long until = pdc.get(angerUntilKey, PersistentDataType.LONG);
+        if (until == null) return true;
+        if (!now && piglin.getWorld().getGameTime() < until) return false;
+        String at = pdc.get(angerAtKey, PersistentDataType.STRING);
+        UUID current = piglin.getMemory(MemoryKey.ANGRY_AT);
+        if (at != null && current != null && at.equals(current.toString())) {
+            piglin.setMemory(MemoryKey.ANGRY_AT, null);
+            if (piglin.getTarget() != null && piglin.getTarget().getUniqueId().equals(current)) piglin.setTarget(null);
+        }
         piglin.setMemory(MemoryKey.UNIVERSAL_ANGER, null);
+        pdc.remove(angerUntilKey);
+        pdc.remove(angerAtKey);
+        return true;
     }
 
     private static Player nearestTargetable(Piglin piglin, Player fallback) {
