@@ -16,6 +16,7 @@ One Paper 1.21.11 plugin that replaces these:
 | BetterEnderChest | `ender-chest` |
 | Revaulting | `revaulting` |
 | SkinsRestorer | `skins` |
+| *(new)* | `ore-growth` |
 
 These are **not** included: CoreProtect (keep it as it is), Simple Voice Chat, and Item-NBT-API, which is only
 a library for other plugins. ServerTweaks and SurvivalTweaks aren't included either, because there are several
@@ -60,7 +61,8 @@ Mining one ore or log breaks the whole connected vein or tree, **whether you're 
 
 ### Villager pickup
 Sneak and right-click a villager with an empty hand to pick it up. Right-click a block to place it back.
-- Trades, level, XP, profession, name and discounts are all kept.
+- The villager becomes an inventory item that holds **all** of its data: trades, level, XP, profession, name,
+  discounts and even its UUID. It comes back exactly the same.
 - The item's lore lists the villager's trades.
 - The item can't be used as a normal spawn egg or in a dispenser, so villagers can't be duplicated.
 
@@ -110,8 +112,18 @@ Ender chests have 6 rows by default. You can set 3–6 rows in `config.yml`, or 
   `/enderchest <player>` opens someone else's (`survivalcore.enderchest.others`).
 
 ### Revaulting
-Trial chamber vaults (normal and ominous) can be opened again with another key. An optional cooldown is set
-in ticks.
+Trial chamber vaults (normal and ominous) can be opened **again and again, as long as you have another key**.
+You can add an optional cooldown in ticks.
+
+### Ore growth
+Hidden stone, deepslate and netherrack near players sometimes turns into a small ore vein.
+- Only blocks that are completely enclosed (nothing see-through on any side) can change, so nobody sees it happen.
+- Blocks a player placed, and stone made by lava and water (generators), never change.
+- Ores follow vanilla heights, so diamonds, redstone, gold and lapis only appear deep down. Netherrack gives quartz,
+  nether gold and rarely ancient debris.
+- Each chunk only ever gets a few new veins (`max-veins-per-chunk`). The ore mix and rates are in `config.yml`.
+- Blocks placed before SurvivalCore was installed can't be told apart from natural ones, but they only change
+  if they're fully enclosed.
 
 ### Skins (`/skin <name>`, `/skin clear`)
 - Wear any Minecraft account's skin. There's a 30-second cooldown, which ops skip.
