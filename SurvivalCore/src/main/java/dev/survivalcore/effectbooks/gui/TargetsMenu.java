@@ -41,9 +41,13 @@ public final class TargetsMenu extends Menu {
             set(i, head(name), e -> {
                 Book b = plugin.manager().get(bookId);
                 if (b == null) return;
-                plugin.manager().removeTarget(b, name);
-                e.getWhoClicked().sendMessage(plugin.prefix() + ChatColor.GREEN + "Removed " + name
-                        + " from " + b.displayName() + ".");
+                try {
+                    plugin.manager().removeTarget(b, name);
+                    e.getWhoClicked().sendMessage(plugin.prefix() + ChatColor.GREEN + "Removed " + name
+                            + " from " + b.displayName() + ".");
+                } catch (IllegalArgumentException ex) {
+                    e.getWhoClicked().sendMessage(plugin.prefix() + ChatColor.RED + ex.getMessage());
+                }
                 redraw();
             });
         }

@@ -45,6 +45,9 @@ public abstract class Module implements Listener {
     /** Called on shutdown, reload, or when the module is turned off. */
     public void disable() {}
 
+    /** Called after a reload when this module was on and is now switched off in config.yml. */
+    public void turnedOff() {}
+
     public String prefix() {
         return ChatColor.DARK_AQUA + "[" + displayName + "] " + ChatColor.RESET;
     }

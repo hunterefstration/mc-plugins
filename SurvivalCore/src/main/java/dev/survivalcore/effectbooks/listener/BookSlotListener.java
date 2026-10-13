@@ -77,11 +77,12 @@ public final class BookSlotListener implements Listener {
     }
 
     public static void takeOut(EffectBooksModule plugin, Player player, Book book) {
+        // Close first: closing puts the cursor item back into the inventory, and it needs the room.
+        player.closeInventory();
         if (!plugin.manager().giveToHand(player, book)) {
             player.sendMessage(plugin.prefix() + ChatColor.RED + "Free up an inventory slot to write in your book.");
             return;
         }
-        player.closeInventory();
         player.sendMessage(plugin.prefix() + ChatColor.GRAY + "Right-click to write names in your "
                 + ChatColor.LIGHT_PURPLE + book.displayName() + ChatColor.GRAY
                 + ". It goes back when you press Done or switch items.");
@@ -99,6 +100,11 @@ public final class BookSlotListener implements Listener {
         Player player = event.getPlayer();
         if (manager.bookId(player.getInventory().getItem(event.getPreviousSlot())) == null) return;
         plugin.getServer().getScheduler().runTask(plugin.core(), () -> manager.syncBooks(player));
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+        manager.forget(event.getPlayer());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)

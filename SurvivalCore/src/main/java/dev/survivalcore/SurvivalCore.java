@@ -87,6 +87,10 @@ public class SurvivalCore extends JavaPlugin {
             } catch (Throwable t) {
                 getLogger().log(Level.SEVERE, "Could not enable " + module.displayName() + ", skipping it.", t);
                 HandlerList.unregisterAll(module);
+                try {
+                    module.disable(); // undo whatever it had started (listeners, tasks)
+                } catch (Throwable ignored) {
+                }
             }
         }
         List<String> names = new ArrayList<>();
@@ -111,11 +115,20 @@ public class SurvivalCore extends JavaPlugin {
 
     /** Reloads config.yml and restarts every module. */
     public void reloadAll() {
+        Set<Module> wasOn = new LinkedHashSet<>(enabled);
         disableModules();
         reloadConfig();
         getConfig().options().copyDefaults(true);
         saveConfig();
         enableModules();
+        for (Module module : wasOn) {
+            if (enabled.contains(module)) continue;
+            try {
+                module.turnedOff();
+            } catch (Throwable t) {
+                getLogger().log(Level.SEVERE, "Error while turning off " + module.displayName(), t);
+            }
+        }
     }
 
     /**

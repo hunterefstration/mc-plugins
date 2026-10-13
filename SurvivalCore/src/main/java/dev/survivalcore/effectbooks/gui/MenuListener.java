@@ -1,5 +1,6 @@
 package dev.survivalcore.effectbooks.gui;
 
+import dev.survivalcore.util.Holders;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -17,7 +18,7 @@ public final class MenuListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onClick(InventoryClickEvent event) {
-        if (!(event.getView().getTopInventory().getHolder() instanceof Menu menu)) return;
+        if (!(Holders.of(event.getView().getTopInventory()) instanceof Menu menu)) return;
         event.setCancelled(true);
         if (event.getClickedInventory() != null && event.getClickedInventory().equals(event.getView().getTopInventory())) {
             // Opening/closing inventories inside a click event is unsafe; act on the next tick.
@@ -27,6 +28,6 @@ public final class MenuListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onDrag(InventoryDragEvent event) {
-        if (event.getView().getTopInventory().getHolder() instanceof Menu) event.setCancelled(true);
+        if (Holders.of(event.getView().getTopInventory()) instanceof Menu) event.setCancelled(true);
     }
 }

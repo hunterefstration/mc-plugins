@@ -86,6 +86,15 @@ public class EffectBooksModule extends Module {
     }
 
     /**
+     * Books were switched off in config.yml. Nothing protects their effects any more, so take them
+     * off everyone online; switching books back on gives them back (who has what is remembered).
+     */
+    @Override
+    public void turnedOff() {
+        if (manager != null) manager.stripEffects();
+    }
+
+    /**
      * The first time this runs on a server that used the standalone EffectBooks plugin, copy its
      * books and names over so nothing is lost.
      */
@@ -145,13 +154,30 @@ public class EffectBooksModule extends Module {
         return config;
     }
 
-    public void reloadConfig() {
-        config = YamlConfiguration.loadConfiguration(configFile);
+    /**
+     * Reloads effectbooks.yml. Returns false (and keeps the previous settings) if the file has a
+     * YAML error, so a typo can never be read as "no books".
+     */
+    public boolean reloadConfig() {
+        YamlConfiguration loaded = new YamlConfiguration();
+        boolean ok = true;
+        try {
+            if (configFile.exists()) loaded.load(configFile);
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            getLogger().severe("effectbooks.yml can't be read, so nothing in it was changed: " + e.getMessage());
+            ok = false;
+        }
+        if (!ok) {
+            if (config == null) config = new YamlConfiguration();
+            return false;
+        }
+        config = loaded;
         InputStream defaults = plugin.getResource("effectbooks.yml");
         if (defaults != null) {
             config.setDefaults(YamlConfiguration.loadConfiguration(
                     new InputStreamReader(defaults, StandardCharsets.UTF_8)));
         }
+        return true;
     }
 
     public void saveConfig() {

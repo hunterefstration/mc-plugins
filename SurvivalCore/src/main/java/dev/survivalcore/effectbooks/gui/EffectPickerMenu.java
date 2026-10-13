@@ -21,7 +21,7 @@ public final class EffectPickerMenu extends Menu {
 
     public EffectPickerMenu(EffectBooksModule plugin, String title, Consumer<PotionEffectType> onPick,
                             Runnable onBack, int page) {
-        super(plugin, 6, title.length() > 32 ? title.substring(0, 32) : title);
+        super(plugin, 6, title);
         this.title = title;
         this.onPick = onPick;
         this.onBack = onBack;

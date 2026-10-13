@@ -1,5 +1,6 @@
 package dev.survivalcore.enderchest;
 
+import dev.survivalcore.util.Holders;
 import dev.survivalcore.Module;
 import dev.survivalcore.SurvivalCore;
 import dev.survivalcore.util.Nbt;
@@ -140,7 +141,7 @@ public final class EnderChestModule extends Module {
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onVanillaOpen(InventoryOpenEvent event) {
         if (event.getInventory().getType() != InventoryType.ENDER_CHEST) return;
-        if (!(event.getInventory().getHolder() instanceof Player owner)) return;
+        if (!(Holders.of(event.getInventory()) instanceof Player owner)) return;
         if (!(event.getPlayer() instanceof Player viewer)) return;
         if (!event.getInventory().equals(owner.getEnderChest())) return;
         event.setCancelled(true);
@@ -175,7 +176,7 @@ public final class EnderChestModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onClose(InventoryCloseEvent event) {
-        if (!(event.getInventory().getHolder() instanceof Session session)) return;
+        if (!(Holders.of(event.getInventory()) instanceof Session session)) return;
         UUID viewer = event.getPlayer().getUniqueId();
         session.viewers.remove(viewer);
         Location chest = viewerChests.remove(viewer);
@@ -213,12 +214,12 @@ public final class EnderChestModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSessionClick(org.bukkit.event.inventory.InventoryClickEvent event) {
-        if (event.getView().getTopInventory().getHolder() instanceof Session session) saveSoon(session);
+        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSessionDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
-        if (event.getView().getTopInventory().getHolder() instanceof Session session) saveSoon(session);
+        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
     }
 
     private static void setLid(Location at, boolean open) {

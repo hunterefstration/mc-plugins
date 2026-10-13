@@ -42,3 +42,7 @@ show-particles: false
 
 # Show the effect icon in the top-right of the screen.
 show-icon: true
+
+# Absorption books: after the golden hearts are used up, wait this many seconds before
+# giving them back (otherwise they'd refill every few seconds).
+absorption-refill-seconds: 30

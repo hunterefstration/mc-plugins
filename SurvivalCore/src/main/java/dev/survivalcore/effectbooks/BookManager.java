@@ -46,6 +46,8 @@ import java.util.logging.Level;
 public final class BookManager {
 
     private static final int NAMES_PER_PAGE = 13;
+    /** A book & quill holds at most 100 pages. */
+    public static final int MAX_TARGETS = NAMES_PER_PAGE * 100;
 
     private final EffectBooksModule plugin;
     private final NamespacedKey bookKey;
@@ -66,7 +68,10 @@ public final class BookManager {
     private final Map<String, Object> badHolders = new LinkedHashMap<>();
 
     private boolean refreshQueued;
-    private final Set<UUID> warnedFullInventory = new HashSet<>();
+    /** effectbooks.yml or the data file has a YAML error: nothing is saved until it's fixed. */
+    private boolean broken;
+    /** At least one load worked, so the books in memory are real (not just "nothing loaded yet"). */
+    private boolean everLoaded;
 
     public BookManager(EffectBooksModule plugin) {
         this.plugin = plugin;
@@ -80,11 +85,30 @@ public final class BookManager {
 
     /** Loads effectbooks.yml (which books exist) and effectbooks-data.yml (who is written in them). */
     public void load() {
-        plugin.reloadConfig();
+        boolean configOk = plugin.reloadConfig();
         FileConfiguration config = plugin.getConfig();
 
+        YamlConfiguration data = new YamlConfiguration();
+        boolean dataOk = true;
+        try {
+            if (dataFile.exists()) data.load(dataFile);
+        } catch (IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            plugin.getLogger().severe("effectbooks-data.yml can't be read: " + e.getMessage());
+            dataOk = false;
+        }
+        Object rawBooks = config.get("books");
+        boolean booksOk = rawBooks == null || rawBooks instanceof ConfigurationSection;
+        if (!booksOk) plugin.getLogger().severe("effectbooks.yml: 'books:' must be a list of holders (check the indentation).");
+        if (!configOk || !dataOk || !booksOk) {
+            // Never treat a broken file as "no books": keep what's loaded and don't save anything.
+            broken = true;
+            plugin.getLogger().severe("Effect books are frozen until the file is fixed (then run /eb reload). "
+                    + "Nothing was deleted.");
+            return;
+        }
+        broken = false;
+
         List<Book> stored = new ArrayList<>();
-        YamlConfiguration data = YamlConfiguration.loadConfiguration(dataFile);
         ConfigurationSection dataBooks = data.getConfigurationSection("books");
         if (dataBooks != null) {
             for (String key : dataBooks.getKeys(false)) {
@@ -118,9 +142,15 @@ public final class BookManager {
                     configErrors = true;
                     continue;
                 }
-                List<String> specs = section.isList(holder)
-                        ? section.getStringList(holder)
-                        : List.of(String.valueOf(section.get(holder)));
+                Object value = section.get(holder);
+                if (!(value instanceof List<?>) && !(value instanceof String)) {
+                    plugin.getLogger().warning("effectbooks.yml: '" + holder + "' needs an effect like SPEED or SPEED:2."
+                            + " Books for this holder are kept but inactive until it is fixed.");
+                    badHolders.put(holder, value);
+                    configErrors = true;
+                    continue;
+                }
+                List<String> specs = value instanceof List<?> ? section.getStringList(holder) : List.of((String) value);
                 for (String spec : specs) {
                     ParsedSpec parsed = parseSpec(spec);
                     if (parsed == null) {
@@ -167,10 +197,24 @@ public final class BookManager {
         if (!dormant.isEmpty()) {
             plugin.getLogger().warning(dormant.size() + " book(s) are inactive until effectbooks.yml errors are fixed.");
         }
+        everLoaded = true;
+        rememberRaw();
         saveData();
     }
 
+    /** True while effectbooks.yml or its data file has a YAML error. */
+    public boolean isBroken() {
+        return broken;
+    }
+
+    private void requireWritable() {
+        if (broken) {
+            throw new IllegalArgumentException("effectbooks.yml (or its data file) has an error. Fix it and run /eb reload first.");
+        }
+    }
+
     public void saveData() {
+        if (broken) return;
         YamlConfiguration data = new YamlConfiguration();
         List<Book> all = new ArrayList<>(books.values());
         all.addAll(dormant.values());
@@ -190,8 +234,25 @@ public final class BookManager {
 
     /** Writes the current books back to effectbooks.yml, keeping the file's comments. */
     public void saveConfig() {
+        if (broken) return;
+        // Start from the file as it is now, so hand edits made since the last reload aren't lost.
+        if (!plugin.reloadConfig()) {
+            plugin.getLogger().severe("effectbooks.yml was edited and now has an error, so the change was not "
+                    + "written to it. Fix the file and run /eb reload.");
+            broken = true;
+            return;
+        }
         FileConfiguration config = plugin.getConfig();
         ConfigurationSection section = config.getConfigurationSection("books");
+        Map<String, Object> handEdited = new LinkedHashMap<>();
+        if (section != null) {
+            for (String key : section.getKeys(false)) {
+                Object now = section.get(key);
+                if (now instanceof ConfigurationSection) continue;
+                if (!java.util.Objects.equals(now, loadedRaw.get(key))) handEdited.put(key, now);
+            }
+            for (String key : loadedRaw.keySet()) if (!section.contains(key)) handEdited.put(key, null);
+        }
         if (section == null) {
             section = config.createSection("books");
         } else {
@@ -209,7 +270,27 @@ public final class BookManager {
             section.set(e.getKey(), e.getValue().size() == 1 ? e.getValue().get(0) : e.getValue());
         }
         for (Map.Entry<String, Object> e : badHolders.entrySet()) section.set(e.getKey(), e.getValue());
+        // Lines changed by hand since the last reload win; /eb reload applies them.
+        if (!handEdited.isEmpty()) {
+            for (Map.Entry<String, Object> e : handEdited.entrySet()) section.set(e.getKey(), e.getValue());
+            plugin.getLogger().warning("effectbooks.yml was edited by hand for " + handEdited.keySet()
+                    + "; kept those lines. Run /eb reload to apply them.");
+        }
         plugin.saveConfig();
+        rememberRaw();
+    }
+
+    /** What the books section looked like when we last read or wrote it (to spot hand edits). */
+    private final Map<String, Object> loadedRaw = new LinkedHashMap<>();
+
+    private void rememberRaw() {
+        loadedRaw.clear();
+        ConfigurationSection section = plugin.getConfig().getConfigurationSection("books");
+        if (section == null) return;
+        for (String key : section.getKeys(false)) {
+            Object v = section.get(key);
+            if (!(v instanceof ConfigurationSection)) loadedRaw.put(key, v instanceof List<?> l ? new ArrayList<>(l) : v);
+        }
     }
 
     private void persist() {
@@ -254,6 +335,7 @@ public final class BookManager {
     // ------------------------------------------------------------------ mutations (all save + resync)
 
     public Book create(String holder, PotionEffectType effect, int level) {
+        requireWritable();
         requireValid(holder, effect);
         if (find(holder, effect) != null) {
             throw new IllegalArgumentException(holder + " already has a Book of " + Effects.prettyName(effect) + ".");
@@ -266,12 +348,14 @@ public final class BookManager {
 
     /** Deleting a book clears its effect from everyone written in it. */
     public void delete(Book book) {
+        requireWritable();
         books.remove(book.id());
         persist();
     }
 
     /** Moves the book (and everyone written in it) to a new holder. */
     public void reassign(Book book, String newHolder) {
+        requireWritable();
         requireValid(newHolder, book.effect());
         Book existing = find(newHolder, book.effect());
         if (existing != null && existing != book) {
@@ -283,6 +367,7 @@ public final class BookManager {
     }
 
     public void changeEffect(Book book, PotionEffectType effect) {
+        requireWritable();
         requireValid(book.holder(), effect);
         Book existing = find(book.holder(), effect);
         if (existing != null && existing != book) {
@@ -294,20 +379,26 @@ public final class BookManager {
     }
 
     public void setLevel(Book book, int level) {
+        requireWritable();
         book.setLevel(clampLevel(level));
         persist();
     }
 
     public void setTargets(Book book, List<String> names) {
+        requireWritable();
         book.targets().clear();
-        book.targets().addAll(names);
+        book.targets().addAll(names.subList(0, Math.min(names.size(), MAX_TARGETS)));
         saveData();
         queueRefresh();
     }
 
     public boolean addTarget(Book book, String name) {
+        requireWritable();
         if (!Effects.isValidName(name)) throw new IllegalArgumentException("'" + name + "' is not a valid username.");
         if (book.hasTarget(name)) return false;
+        if (book.targets().size() >= MAX_TARGETS) {
+            throw new IllegalArgumentException("A book holds at most " + MAX_TARGETS + " names.");
+        }
         book.targets().add(name);
         saveData();
         queueRefresh();
@@ -315,6 +406,7 @@ public final class BookManager {
     }
 
     public void removeTarget(Book book, String name) {
+        requireWritable();
         book.targets().removeIf(t -> t.equalsIgnoreCase(name));
         saveData();
         queueRefresh();
@@ -329,6 +421,11 @@ public final class BookManager {
     // ------------------------------------------------------------------ book item
 
     public ItemStack createItem(Book book) {
+        return createItem(book, book.targets());
+    }
+
+    /** The book item showing {@code names} (used to rewrite pages before they're saved). */
+    public ItemStack createItem(Book book, List<String> names) {
         ItemStack item = new ItemStack(Material.WRITABLE_BOOK);
         BookMeta meta = (BookMeta) item.getItemMeta();
         meta.setItemName(ChatColor.LIGHT_PURPLE + book.displayName());
@@ -341,7 +438,7 @@ public final class BookManager {
                                 + ChatColor.GRAY + " every few seconds."
                         : ChatColor.GRAY + "Everyone listed has " + ChatColor.AQUA + effectLabel(book)
                                 + ChatColor.GRAY + " forever."));
-        meta.setPages(pagesFor(book.targets()));
+        meta.setPages(pagesFor(names));
         meta.getPersistentDataContainer().set(bookKey, PersistentDataType.STRING, book.id().toString());
         item.setItemMeta(meta);
         return item;
@@ -399,7 +496,11 @@ public final class BookManager {
 
     /** The real book, the crafting-slot preview of it, or a leftover from the standalone plugin. */
     public boolean isEffectBook(ItemStack item) {
-        return bookId(item) != null || isDisplay(item) || isLegacy(item);
+        // Cheap check first: this runs for every slot of every player on each refresh.
+        if (item == null || item.getType() != Material.WRITABLE_BOOK || !item.hasItemMeta()) return false;
+        var pdc = item.getItemMeta().getPersistentDataContainer();
+        return pdc.has(bookKey, PersistentDataType.STRING) || pdc.has(displayKey, PersistentDataType.BYTE)
+                || pdc.has(LEGACY_BOOK_KEY, PersistentDataType.STRING);
     }
 
     /** True for the preview item shown in the crafting output slot. */
@@ -472,6 +573,7 @@ public final class BookManager {
 
     public void refresh(Player player) {
         if (!player.isOnline()) return;
+        if (broken && !everLoaded) return; // nothing real loaded yet: don't strip anyone's effects
         syncBooks(player);
         reconcileEffects(player);
     }
@@ -557,13 +659,22 @@ public final class BookManager {
                     && open.getTopInventory().getType() != InventoryType.CRAFTING && !booksHeldBy(p).isEmpty()) {
                 p.closeInventory();
             }
+            if (isEffectBook(p.getItemOnCursor())) p.setItemOnCursor(null);
             InventoryView view = p.getOpenInventory();
             if (view != null && view.getTopInventory() instanceof CraftingInventory crafting && isDisplay(crafting.getResult())) crafting.setResult(null);
             PlayerInventory inv = p.getInventory();
             for (int slot = 0; slot < inv.getSize(); slot++) {
                 if (isEffectBook(inv.getItem(slot))) inv.setItem(slot, null);
             }
+            restoreMovedTool(p, false);
         }
+    }
+
+    /** On quit: put the book away (so the tool goes back) and forget per-player state. */
+    public void forget(Player player) {
+        putAway(player);
+        movedTools.remove(player.getUniqueId());
+        openedWith.remove(player.getUniqueId());
     }
 
     /**
@@ -572,10 +683,14 @@ public final class BookManager {
      * inventory. Returns false if there's no room at all.
      */
     public boolean giveToHand(Player player, Book book) {
+        openedWith.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>())
+                .put(book.id(), new ArrayList<>(book.targets()));
         PlayerInventory inv = player.getInventory();
         for (int slot = 0; slot < inv.getSize(); slot++) {
             if (book.id().equals(bookId(inv.getItem(slot)))) inv.setItem(slot, null);
         }
+        // Swapping from one of their books to another: just replace it, don't move it around.
+        if (isEffectBook(inv.getItemInMainHand())) inv.setItemInMainHand(null);
         if (isEmpty(inv.getItemInMainHand())) {
             inv.setItemInMainHand(createItem(book));
             return true;
@@ -592,11 +707,35 @@ public final class BookManager {
                 ItemStack held = inv.getItemInMainHand();
                 inv.setItem(slot, held);
                 inv.setItemInMainHand(createItem(book));
-                movedTools.put(player.getUniqueId(), new MovedTool(inv.getHeldItemSlot(), slot, held.clone()));
+                movedTools.putIfAbsent(player.getUniqueId(), new MovedTool(inv.getHeldItemSlot(), slot, held.clone()));
                 return true;
             }
         }
         return false;
+    }
+
+    /** The names each book had when the holder took it out (to merge with changes made meanwhile). */
+    private final Map<UUID, Map<UUID, List<String>>> openedWith = new HashMap<>();
+
+    /**
+     * Applies the holder's edit on top of the book's current names: names they erased are removed
+     * and names they wrote are added, but names an admin added while they were writing are kept.
+     */
+    public List<String> mergeEdit(Player player, Book book, List<String> written) {
+        Map<UUID, List<String>> mine = openedWith.get(player.getUniqueId());
+        List<String> before = mine == null ? null : mine.remove(book.id());
+        if (before == null) return written;
+        Set<String> beforeLower = new HashSet<>();
+        for (String n : before) beforeLower.add(n.toLowerCase(Locale.ROOT));
+        Set<String> writtenLower = new HashSet<>();
+        for (String n : written) writtenLower.add(n.toLowerCase(Locale.ROOT));
+        List<String> result = new ArrayList<>(written);
+        for (String current : book.targets()) {
+            String lower = current.toLowerCase(Locale.ROOT);
+            // Added by someone else after they opened it, and not already in what they wrote.
+            if (!beforeLower.contains(lower) && !writtenLower.contains(lower)) result.add(current);
+        }
+        return result.subList(0, Math.min(result.size(), MAX_TARGETS));
     }
 
     /** Where giveToHand moved a player's held item to, so it can go back afterwards. */
@@ -641,6 +780,14 @@ public final class BookManager {
         }
     }
 
+    /** When each player's book Absorption last ran out (its hearts were used up). */
+    private final Map<UUID, Long> absorptionUsedUp = new HashMap<>();
+
+    /** Called when book Absorption wears off because its golden hearts are gone. */
+    public void absorptionUsedUp(Player player) {
+        absorptionUsedUp.put(player.getUniqueId(), System.currentTimeMillis());
+    }
+
     /** Applies the effects this player should have and removes ones they no longer should. */
     public void reconcileEffects(Player player) {
         Map<PotionEffectType, Integer> desired = desiredEffects(player.getName());
@@ -650,26 +797,71 @@ public final class BookManager {
         for (Map.Entry<PotionEffectType, Integer> e : managed.entrySet()) {
             Integer want = desired.get(e.getKey());
             if (want != null && want.equals(e.getValue())) continue;
-            PotionEffect current = player.getPotionEffect(e.getKey());
-            // Only strip the infinite effect we gave; leave normal potions alone.
-            if (current != null && current.isInfinite() && current.getAmplifier() == e.getValue()) {
-                player.removePotionEffect(e.getKey());
-            }
+            removeOurs(player, e.getKey(), e.getValue());
         }
 
         boolean particles = plugin.getConfig().getBoolean("show-particles", false);
         boolean icon = plugin.getConfig().getBoolean("show-icon", true);
+        long refill = Math.max(0, plugin.getConfig().getLong("absorption-refill-seconds", 30)) * 1000L;
         for (Map.Entry<PotionEffectType, Integer> e : desired.entrySet()) {
-            PotionEffect current = player.getPotionEffect(e.getKey());
+            PotionEffectType type = e.getKey();
+            PotionEffect current = player.getPotionEffect(type);
             int amp = e.getValue();
+            if (type.equals(PotionEffectType.ABSORPTION) && current == null) {
+                // Its golden hearts were used up; give them back after a while, not every check.
+                Long usedUp = absorptionUsedUp.get(player.getUniqueId());
+                if (usedUp != null && System.currentTimeMillis() - usedUp < refill) continue;
+                absorptionUsedUp.remove(player.getUniqueId());
+            }
+            boolean ours = current != null && current.isInfinite() && current.getAmplifier() == amp;
+            if (ours && (current.hasParticles() != particles || current.hasIcon() != icon || !current.isAmbient())) {
+                // Settings changed, or a beacon/potion copied its own particle/icon flags onto ours.
+                player.removePotionEffect(type);
+                current = null;
+            } else if (ours) {
+                continue;
+            }
             if (current == null || current.getAmplifier() < amp
                     || (current.getAmplifier() == amp && !current.isInfinite())) {
-                player.addPotionEffect(new PotionEffect(e.getKey(), PotionEffect.INFINITE_DURATION, amp,
-                        true, particles, icon));
+                player.addPotionEffect(new PotionEffect(type, PotionEffect.INFINITE_DURATION, amp, true, particles, icon));
             }
         }
 
         if (!desired.equals(managed)) writeManaged(player, desired);
+    }
+
+    /**
+     * Removes the infinite effect we gave, even when a stronger potion is currently covering it
+     * (vanilla keeps ours "hidden" underneath and would bring it back when the potion ends).
+     * Anything else of that type stays exactly as it was.
+     */
+    private void removeOurs(Player player, PotionEffectType type, int amp) {
+        PotionEffect current = player.getPotionEffect(type);
+        if (current == null) return;
+        List<PotionEffect> chain = new ArrayList<>();
+        boolean found = false;
+        for (PotionEffect e = current; e != null; e = e.getHiddenPotionEffect()) {
+            if (!found && e.isInfinite() && e.getAmplifier() == amp) {
+                found = true;
+                continue;
+            }
+            chain.add(e);
+        }
+        if (!found) return;
+        player.removePotionEffect(type);
+        // Re-add the rest from the bottom up, so vanilla rebuilds the same stack.
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            PotionEffect e = chain.get(i);
+            player.addPotionEffect(new PotionEffect(type, e.getDuration(), e.getAmplifier(), e.isAmbient(),
+                    e.hasParticles(), e.hasIcon()));
+        }
+    }
+
+    /** Takes book effects off everyone online (when books are turned off). The record is kept for later. */
+    public void stripEffects() {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            for (Map.Entry<PotionEffectType, Integer> e : readManaged(p).entrySet()) removeOurs(p, e.getKey(), e.getValue());
+        }
     }
 
     private Map<PotionEffectType, Integer> readManaged(Player player) {

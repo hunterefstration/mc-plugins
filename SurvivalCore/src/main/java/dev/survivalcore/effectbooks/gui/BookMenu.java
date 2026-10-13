@@ -63,9 +63,15 @@ public final class BookMenu extends Menu {
         set(12, Icons.icon(Material.EXPERIENCE_BOTTLE, ChatColor.GREEN + "Level: " + Effects.roman(book.level()),
                 "Left-click: +1",
                 "Right-click: -1"), e -> {
-            int level = book.level() + (e.isRightClick() ? -1 : 1);
-            if (level < 1 || level > Math.max(GUI_MAX_LEVEL, book.level())) return;
-            plugin.manager().setLevel(book, level);
+            Book current = plugin.manager().get(bookId); // the menu may be older than a reload
+            if (current == null) { reopenMain((Player) e.getWhoClicked()); return; }
+            int level = current.level() + (e.isRightClick() ? -1 : 1);
+            if (level < 1 || level > Math.max(GUI_MAX_LEVEL, current.level())) return;
+            try {
+                plugin.manager().setLevel(current, level);
+            } catch (IllegalArgumentException ex) {
+                e.getWhoClicked().sendMessage(plugin.prefix() + ChatColor.RED + ex.getMessage());
+            }
             redraw();
         });
 
@@ -81,9 +87,13 @@ public final class BookMenu extends Menu {
             new ConfirmMenu(plugin, "Delete " + book.displayName() + "?", () -> {
                 Book b = plugin.manager().get(bookId);
                 if (b != null) {
-                    plugin.manager().delete(b);
-                    admin.sendMessage(plugin.prefix() + ChatColor.GREEN + "Deleted " + b.displayName()
-                            + " (" + b.holder() + ").");
+                    try {
+                        plugin.manager().delete(b);
+                        admin.sendMessage(plugin.prefix() + ChatColor.GREEN + "Deleted " + b.displayName()
+                                + " (" + b.holder() + ").");
+                    } catch (IllegalArgumentException ex) {
+                        admin.sendMessage(plugin.prefix() + ChatColor.RED + ex.getMessage());
+                    }
                 }
                 reopenMain(admin);
             }, () -> open(admin)).open(admin);

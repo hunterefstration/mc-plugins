@@ -1,5 +1,6 @@
 package dev.survivalcore.effectbooks.listener;
 
+import dev.survivalcore.util.Holders;
 import dev.survivalcore.effectbooks.BookManager;
 import dev.survivalcore.effectbooks.EffectBooksModule;
 import dev.survivalcore.effectbooks.gui.Menu;
@@ -81,7 +82,7 @@ public final class BookProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
-        if (event.getView().getTopInventory().getHolder() instanceof Menu) return;
+        if (Holders.of(event.getView().getTopInventory()) instanceof Menu) return;
 
         ItemStack cursor = event.getCursor();
         ItemStack current = event.getCurrentItem();
@@ -139,7 +140,7 @@ public final class BookProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onOpen(InventoryOpenEvent event) {
         Inventory top = event.getView().getTopInventory();
-        if (top instanceof PlayerInventory || top.getHolder() instanceof Menu) return;
+        if (top instanceof PlayerInventory || Holders.of(top) instanceof Menu) return;
         boolean removed = false;
         for (int slot = 0; slot < top.getSize(); slot++) {
             if (isBook(top.getItem(slot))) {

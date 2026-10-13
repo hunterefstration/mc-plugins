@@ -41,7 +41,11 @@ public final class EffectBooksCommand implements TabExecutor {
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "reload" -> {
                 plugin.reload();
-                sender.sendMessage(p + ChatColor.GREEN + "Reloaded. " + plugin.manager().books().size() + " book(s) active.");
+                if (plugin.manager().isBroken()) {
+                    sender.sendMessage(p + ChatColor.RED + "effectbooks.yml has an error (see the console). Nothing was changed.");
+                } else {
+                    sender.sendMessage(p + ChatColor.GREEN + "Reloaded. " + plugin.manager().books().size() + " book(s) active.");
+                }
             }
             case "list" -> {
                 if (plugin.manager().books().isEmpty()) {
@@ -90,9 +94,13 @@ public final class EffectBooksCommand implements TabExecutor {
                     sender.sendMessage(p + ChatColor.RED + args[1] + " has no book of that effect.");
                     return true;
                 }
-                plugin.manager().delete(book);
-                sender.sendMessage(p + ChatColor.GREEN + "Deleted " + book.displayName() + " (" + book.holder()
-                        + "). Its effect was cleared from everyone in it.");
+                try {
+                    plugin.manager().delete(book);
+                    sender.sendMessage(p + ChatColor.GREEN + "Deleted " + book.displayName() + " (" + book.holder()
+                            + "). Its effect was cleared from everyone in it.");
+                } catch (IllegalArgumentException e) {
+                    sender.sendMessage(p + ChatColor.RED + e.getMessage());
+                }
             }
             default -> help(sender, label);
         }
@@ -106,7 +114,7 @@ public final class EffectBooksCommand implements TabExecutor {
         sender.sendMessage(ChatColor.YELLOW + "/" + label + " list" + ChatColor.GRAY + " - list all books");
         sender.sendMessage(ChatColor.YELLOW + "/" + label + " add <holder> <effect> [level]" + ChatColor.GRAY + " - create a book");
         sender.sendMessage(ChatColor.YELLOW + "/" + label + " delete <holder> <effect>" + ChatColor.GRAY + " - delete a book");
-        sender.sendMessage(ChatColor.YELLOW + "/" + label + " reload" + ChatColor.GRAY + " - reload config.yml");
+        sender.sendMessage(ChatColor.YELLOW + "/" + label + " reload" + ChatColor.GRAY + " - reload effectbooks.yml");
     }
 
     @Override

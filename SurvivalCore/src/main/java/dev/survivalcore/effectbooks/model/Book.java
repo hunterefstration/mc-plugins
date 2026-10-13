@@ -52,6 +52,6 @@ public final class Book {
 
     /** Config form, e.g. "SPEED" or "STRENGTH:2". */
     public String spec() {
-        return Effects.id(effect).toUpperCase() + (level > 1 ? ":" + level : "");
+        return Effects.id(effect).toUpperCase(java.util.Locale.ROOT) + (level > 1 ? ":" + level : "");
     }
 }
