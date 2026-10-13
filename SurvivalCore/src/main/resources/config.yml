@@ -1,0 +1,111 @@
+# ------------------------------------------------------------------
+#  SurvivalCore - all of the server's survival features in one plugin
+# ------------------------------------------------------------------
+# Every feature can be turned off with "enabled: false".
+# After editing, run /survivalcore reload (or /sc reload).
+# Effect book settings and books live in effectbooks.yml.
+
+effect-books:
+  enabled: true
+
+# Break a whole ore vein or tree by mining one block. Works sneaking or not.
+# Players can turn it off for themselves with /veinminer off.
+vein-miner:
+  enabled: true
+  max-ores: 64
+  max-logs: 256
+  # Ores only vein-mine with a tool that can actually mine them (stone pickaxe for iron...).
+  require-correct-tool: true
+  # Trees only vein-mine with an axe.
+  logs-need-axe: true
+  # Stop before the tool breaks.
+  protect-tool: true
+  # Drop everything at the block you mined instead of all over the vein.
+  drops-at-first-block: true
+  ancient-debris: true
+  work-in-creative: false
+  # Any other blocks to vein-mine, e.g. [GLOWSTONE, AMETHYST_CLUSTER]
+  extra-blocks: []
+
+# Extra crafting recipes (the vanilla ones still work too).
+recipes:
+  enabled: true
+  # 5 string in an X (or a plus) -> cobweb
+  cobweb:
+    enabled: true
+    amount: 1
+  # Apple with 4 gold ingots around it (plus shape) -> golden apple
+  cheap-golden-apple:
+    enabled: true
+  # Apple surrounded by 8 gold blocks -> enchanted golden apple (the pre-1.9 recipe)
+  enchanted-golden-apple:
+    enabled: false
+
+# Sneak + right-click a villager with an empty hand to pick it up as an item.
+# Right-click a block with the item to place it back. Trades, level, XP and discounts are kept.
+villager-pickup:
+  enabled: true
+  require-sneak: true
+  allow-babies: true
+  # Entity types that can be picked up, e.g. add ZOMBIE_VILLAGER or WANDERING_TRADER
+  entities: [VILLAGER]
+
+# Villagers never run out of stock.
+instant-restock:
+  enabled: true
+  wandering-traders: true
+
+# The End stays closed until you open it: the 12th eye of ender can't be placed and
+# existing end portals don't work. /endportal open | open in 2h | close
+# (survivalcore.endportal.bypass lets someone through anyway.)
+end-portal:
+  enabled: true
+  open: false
+  # Set by "/endportal open in <time>" (epoch millis). 0 = no timer.
+  opens-at: 0
+  closed-message: "The End is closed for now."
+
+# String dupers and tripwire hook dupers, working the vanilla way.
+dupers:
+  enabled: true
+  # 1.21.1 string duping: a disarmed string destroyed in an attached hook line gets put back.
+  string-dupe: true
+  # Breaking attached string with shears also dupes it (vanilla 1.21.1 did this too).
+  string-dupe-with-shears: true
+  # Tripwire hook duping (turns on Paper's skip-tripwire-hook-placement-validation).
+  tripwire-hook-dupe: true
+  # Other Paper-disabled dupes, off unless you want them:
+  tnt-carpet-rail-dupe: false
+  sand-gravel-dupe: false
+
+# Attribute swapping (hit, then swap items in the same tick), which Paper disables.
+attribute-swap:
+  enabled: true
+
+# Fishing rod stasis chambers: your bobber keeps holding the plate while you're in another
+# dimension, and reeling in from anywhere lets go of it (Paper deletes the bobber instead).
+rod-stasis:
+  enabled: true
+
+# Bigger ender chests. The first 3 rows are the normal vanilla ender chest.
+# Imports BetterEnderChest chests automatically the first time each player opens theirs.
+ender-chest:
+  enabled: true
+  # 3 to 6. Give survivalcore.enderchest.rows.<n> for more rows than this for some players.
+  rows: 6
+  title: "Ender Chest"
+
+# Trial chamber vaults can be opened again with another key.
+revaulting:
+  enabled: true
+  # Wait this long (in ticks, 20 = 1 second) before the same player can use a vault again.
+  cooldown-ticks:
+    vault: 0
+    ominous-vault: 0
+
+# /skin <name> to wear any player's skin, /skin clear to go back.
+skins:
+  enabled: true
+  # On offline-mode servers, give everyone the skin of the account matching their username.
+  offline-mode-auto-skin: true
+  cooldown-seconds: 30

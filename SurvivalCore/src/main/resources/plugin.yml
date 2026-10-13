@@ -1,0 +1,71 @@
+name: SurvivalCore
+version: '${version}'
+main: dev.survivalcore.SurvivalCore
+api-version: '1.21'
+author: hunterefstration
+description: All of the server's survival features in one plugin.
+commands:
+  survivalcore:
+    description: List features or reload config.yml.
+    aliases: [sc]
+    permission: survivalcore.admin
+    usage: /<command> [reload]
+  effectbooks:
+    description: Open the Effect Books admin menu.
+    aliases: [eb, effectbook]
+    permission: effectbooks.admin
+    usage: /<command> [reload|list|add|delete|help]
+  book:
+    description: Take out your effect book to write in it.
+    aliases: [mybook]
+    usage: /<command>
+  veinminer:
+    description: Turn vein mining on or off for yourself.
+    aliases: [vm]
+    usage: /<command> [on|off]
+  endportal:
+    description: Open or close the End.
+    aliases: [endopen]
+    permission: survivalcore.endportal.admin
+    usage: /<command> [open [in <time>]|close|status]
+  enderchest:
+    description: Open your ender chest (or someone else's, for admins).
+    aliases: [ec, echest]
+    permission: survivalcore.enderchest.command
+    usage: /<command> [player]
+  skin:
+    description: Change your skin.
+    aliases: [skins]
+    permission: survivalcore.skin
+    usage: /<command> <username|clear> [player]
+permissions:
+  survivalcore.admin:
+    description: Reload SurvivalCore and see which features are on.
+    default: op
+  effectbooks.admin:
+    description: Manage effect books.
+    default: op
+  survivalcore.veinminer:
+    description: Use vein mining.
+    default: true
+  survivalcore.villagerpickup:
+    description: Pick up villagers.
+    default: true
+  survivalcore.endportal.admin:
+    description: Open and close the End.
+    default: op
+  survivalcore.endportal.bypass:
+    description: Place the 12th eye and use end portals while the End is closed.
+    default: false
+  survivalcore.enderchest.command:
+    description: Open your ender chest anywhere with /enderchest.
+    default: op
+  survivalcore.enderchest.others:
+    description: Open other players' ender chests with /enderchest <player>.
+    default: op
+  survivalcore.skin:
+    description: Change your own skin.
+    default: true
+  survivalcore.skin.others:
+    description: Change other players' skins, with no cooldown.
+    default: op
