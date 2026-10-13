@@ -8,7 +8,6 @@ import dev.survivalcore.luck.LuckModule;
 import dev.survivalcore.ores.OreGrowthModule;
 import dev.survivalcore.pvp.AttributeSwapModule;
 import dev.survivalcore.recipes.RecipesModule;
-import dev.survivalcore.skins.SkinsModule;
 import dev.survivalcore.stasis.RodStasisModule;
 import dev.survivalcore.vaults.RevaultingModule;
 import dev.survivalcore.veinminer.VeinMinerModule;
@@ -54,7 +53,6 @@ public class SurvivalCore extends JavaPlugin {
         register(new RodStasisModule(this));
         register(new EnderChestModule(this));
         register(new RevaultingModule(this));
-        register(new SkinsModule(this));
         register(new OreGrowthModule(this));
         register(new LuckModule(this));
 

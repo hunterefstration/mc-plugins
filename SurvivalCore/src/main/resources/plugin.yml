@@ -33,11 +33,6 @@ commands:
     aliases: [ec, echest]
     permission: survivalcore.enderchest.command
     usage: /<command> [player]
-  skin:
-    description: Change your skin.
-    aliases: [skins]
-    permission: survivalcore.skin
-    usage: /<command> <username|clear> [player]
   luckboost:
     description: Admin tool.
     aliases: [lb]
@@ -67,12 +62,6 @@ permissions:
     default: op
   survivalcore.enderchest.others:
     description: Open other players' ender chests with /enderchest <player>.
-    default: op
-  survivalcore.skin:
-    description: Change your own skin.
-    default: true
-  survivalcore.skin.others:
-    description: Change other players' skins, with no cooldown.
     default: op
   survivalcore.luckboost:
     description: Admin tool.

@@ -47,8 +47,6 @@ public final class DupersModule extends Module {
 
     /** Strings to put back at the end of this tick (vanilla did it during the same block update). */
     private final List<Pending> pending = new ArrayList<>();
-    /** Hooks that have already detached this tick, so the same line can't dupe twice in one update. */
-    private final Set<Block> detachedThisTick = new HashSet<>();
 
     private record Pending(Block block, BlockData state) {}
 
@@ -59,7 +57,6 @@ public final class DupersModule extends Module {
     @Override
     public void enable() {
         pending.clear();
-        detachedThisTick.clear();
         stringDupe = config().getBoolean("string-dupe", true);
         shearDupe = config().getBoolean("string-dupe-with-shears", true);
         paper = new PaperSettings(plugin, displayName());
@@ -79,14 +76,13 @@ public final class DupersModule extends Module {
     public void disable() {
         if (paper != null) paper.restore();
         pending.clear();
-        detachedThisTick.clear();
     }
 
     // ------------------------------------------------------------------ ways a string gets destroyed
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFlow(BlockFromToEvent event) {
-        removed(event.getToBlock(), false);
+        removed(event.getToBlock(), false, new HashSet<>());
     }
 
     // Pistons and buckets aren't listed: in 1.21.1 the moving block / placed water immediately
@@ -97,28 +93,33 @@ public final class DupersModule extends Module {
     public void onBreak(BlockBreakEvent event) {
         // Vanilla marks string as disarmed when it's broken with shears, just before removing it.
         boolean shears = event.getPlayer().getInventory().getItemInMainHand().getType() == Material.SHEARS;
-        removed(event.getBlock(), shears && shearDupe);
+        removed(event.getBlock(), shears && shearDupe, new HashSet<>());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        for (Block b : event.blockList()) removed(b, false);
+        Set<Block> detached = new HashSet<>(); // vanilla removes these one by one: the first detaches the line
+        for (Block b : event.blockList()) removed(b, false, detached);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
-        for (Block b : event.blockList()) removed(b, false);
+        Set<Block> detached = new HashSet<>();
+        for (Block b : event.blockList()) removed(b, false, detached);
     }
 
     // ------------------------------------------------------------------ the 1.21.1 logic
 
     /**
-     * Called just before a block is destroyed. Mirrors TripWireBlock#updateSource followed by
+     * Called just before a block is destroyed. {@code detached} holds hooks that already detached
+     * earlier in the same event (e.g. an explosion breaking two strings of one line); between
+     * separate events the hooks' real state in the world already says so, as in vanilla. Mirrors TripWireBlock#updateSource followed by
      * TripWireHookBlock#calculateState from 1.21.1, which re-placed the string when a disarmed
      * one was removed from an attached line.
      */
-    void removed(Block wire, boolean disarmedByShears) {
+    void removed(Block wire, boolean disarmedByShears, Set<Block> detached) {
         if (!stringDupe || wire.getType() != Material.TRIPWIRE) return;
+        for (Pending p : pending) if (p.block().equals(wire)) return; // already queued this tick
         if (!(wire.getBlockData() instanceof Tripwire current)) return;
         Tripwire state = (Tripwire) current.clone();
         if (disarmedByShears) state.setDisarmed(true);
@@ -131,7 +132,7 @@ public final class DupersModule extends Module {
                 Block b = wire.getRelative(dir, i);
                 if (b.getType() == Material.TRIPWIRE_HOOK) {
                     if (b.getBlockData() instanceof TripwireHook hook && hook.getFacing() == dir.getOppositeFace()
-                            && wouldReplace(b, hook, i)) {
+                            && wouldReplace(b, hook, i, detached)) {
                         state.setAttached(false);
                         pending.add(new Pending(wire, state));
                         return;
@@ -148,8 +149,8 @@ public final class DupersModule extends Module {
      * and is now detaching (a disarmed string never counts as attached), so it re-sets every string
      * between itself and the hook on the other end.
      */
-    private boolean wouldReplace(Block hookBlock, TripwireHook hook, int removedAt) {
-        if (!hook.isAttached() || detachedThisTick.contains(hookBlock)) return false;
+    private boolean wouldReplace(Block hookBlock, TripwireHook hook, int removedAt, Set<Block> detached) {
+        if (!hook.isAttached() || detached.contains(hookBlock)) return false;
         BlockFace facing = hook.getFacing();
         for (int j = 1; j < MAX_LINE; j++) {
             Block b = hookBlock.getRelative(facing, j);
@@ -158,8 +159,8 @@ public final class DupersModule extends Module {
                     return false;
                 }
                 if (j <= removedAt) return false;
-                detachedThisTick.add(hookBlock);
-                detachedThisTick.add(b);
+                detached.add(hookBlock);
+                detached.add(b);
                 return true;
             }
         }
@@ -190,7 +191,6 @@ public final class DupersModule extends Module {
 
     @EventHandler
     public void onTickEnd(ServerTickEndEvent event) {
-        detachedThisTick.clear();
         if (pending.isEmpty()) return;
         List<Pending> batch = new ArrayList<>(pending);
         pending.clear();

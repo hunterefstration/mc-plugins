@@ -149,10 +149,3 @@ ore-growth:
       NETHER_QUARTZ_ORE: 70
       NETHER_GOLD_ORE: 28
       ANCIENT_DEBRIS: 2
-
-# /skin <name> to wear any player's skin, /skin clear to go back.
-skins:
-  enabled: true
-  # On offline-mode servers, give everyone the skin of the account matching their username.
-  offline-mode-auto-skin: true
-  cooldown-seconds: 30

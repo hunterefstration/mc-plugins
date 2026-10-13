@@ -15,11 +15,10 @@ One Paper 1.21.11 plugin that replaces these:
 | RodStasis | `rod-stasis` |
 | BetterEnderChest | `ender-chest` |
 | Revaulting | `revaulting` |
-| SkinsRestorer | `skins` |
 | *(new)* | `ore-growth` |
 
-These are **not** included: CoreProtect (keep it as it is), Simple Voice Chat, and Item-NBT-API, which is only
-a library for other plugins. ServerTweaks and SurvivalTweaks aren't included either, because there are several
+These are **not** included: CoreProtect (keep it as it is), Simple Voice Chat, SkinsRestorer, and Item-NBT-API,
+which is only a library for other plugins. ServerTweaks and SurvivalTweaks aren't included either, because there are several
 plugins with those names and we couldn't tell which ones these are.
 
 Every feature can be turned off in `config.yml`. Run `/sc` to see what's on, and `/sc reload` after
@@ -127,12 +126,6 @@ Hidden stone, deepslate and netherrack near players sometimes turns into a small
 - Each chunk only ever gets a few new veins (`max-veins-per-chunk`). The ore mix and rates are in `config.yml`.
 - Blocks placed before SurvivalCore was installed can't be told apart from natural ones, but they only change
   if they're fully enclosed.
-
-### Skins (`/skin <name>`, `/skin clear`)
-- Wear any Minecraft account's skin. There's a 30-second cooldown, which ops skip.
-- `/skin <name> <player>` changes someone else's skin (`survivalcore.skin.others`).
-- On offline-mode servers, everyone automatically gets the skin of the account with their username.
-- Skins chosen with SkinsRestorer aren't carried over, so players need to run `/skin` once.
 
 ## Build
 ```bash
