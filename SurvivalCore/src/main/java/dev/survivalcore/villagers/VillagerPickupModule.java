@@ -88,7 +88,10 @@ public final class VillagerPickupModule extends Module {
             return pickedAt < 0;
         }
     }
-    /** World -> tick of its last flushed save in this run. */
+    /**
+     * World -> tick of its last flushed save in this run. Compared strictly: a save earlier in the
+     * same tick doesn't include what happened after it.
+     */
     private final Map<UUID, Long> lastSaved = new HashMap<>();
     private final Map<UUID, Spot> pickedUp = new HashMap<>();
     private final Set<UUID> saveScheduled = new HashSet<>();
@@ -491,7 +494,7 @@ public final class VillagerPickupModule extends Module {
                 // Not loaded (its chunk unloaded): safe once every world has been saved since it was placed.
                 safe = true;
                 for (org.bukkit.World w : Bukkit.getWorlds()) {
-                    if (lastSaved.getOrDefault(w.getUID(), -1L) < p.placedAt()) {
+                    if (lastSaved.getOrDefault(w.getUID(), -1L) <= p.placedAt()) {
                         safe = false;
                         saveWorldSoon(w, PLACE_SAVE_DELAY);
                     }
@@ -511,10 +514,10 @@ public final class VillagerPickupModule extends Module {
      * the world it was removed in has been saved since.
      */
     private boolean safeOnDisk(Spot spot) {
-        if (spot.cleanedIn() != null) return lastSaved.getOrDefault(spot.cleanedIn(), -1L) >= spot.cleanedAt();
+        if (spot.cleanedIn() != null) return lastSaved.getOrDefault(spot.cleanedIn(), -1L) > spot.cleanedAt();
         if (spot.fromLastRun()) return false; // its old copy hasn't turned up yet: keep watching for it
         for (org.bukkit.World w : Bukkit.getWorlds()) {
-            if (lastSaved.getOrDefault(w.getUID(), -1L) < spot.pickedAt()) return false;
+            if (lastSaved.getOrDefault(w.getUID(), -1L) <= spot.pickedAt()) return false;
         }
         return true;
     }
