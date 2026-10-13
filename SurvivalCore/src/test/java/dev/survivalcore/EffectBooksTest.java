@@ -471,6 +471,26 @@ class EffectBooksTest {
     }
 
     @Test
+    void brokenYamlNeverWipesNames() throws Exception {
+        PlayerMock steve = join("Steve");
+        PlayerMock bob = join("Bob");
+        server.getScheduler().performTicks(2);
+        write(steve, "Bob");
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "effectbooks.yml");
+        java.nio.file.Files.writeString(file.toPath(), "books:\n\tSteve: SPEED\n"); // a tab: invalid YAML
+        plugin.reload();
+        assertTrue(manager.isBroken());
+        server.getScheduler().performTicks(60);
+        assertNotNull(bob.getPotionEffect(PotionEffectType.SPEED), "effects keep working");
+        assertThrows(IllegalArgumentException.class, () -> manager.create("Herobrine", PotionEffectType.HASTE, 1));
+
+        java.nio.file.Files.writeString(file.toPath(), "books:\n  Steve: SPEED\n  Alex: [STRENGTH:2, NIGHT_VISION]\n");
+        plugin.reload();
+        assertFalse(manager.isBroken());
+        assertEquals(List.of("Bob"), manager.find("Steve", PotionEffectType.SPEED).targets());
+    }
+
+    @Test
     void removingFromConfigDeletesBook() {
         PlayerMock steve = join("Steve");
         PlayerMock bob = join("Bob");

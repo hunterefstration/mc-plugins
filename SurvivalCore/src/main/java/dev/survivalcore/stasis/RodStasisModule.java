@@ -31,6 +31,7 @@ import org.bukkit.persistence.PersistentDataType;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -56,6 +57,15 @@ public final class RodStasisModule extends Module {
         super(plugin, "rod-stasis", "RodStasis");
         this.ownerKey = new NamespacedKey(plugin, "stasis_owner");
         this.file = new File(plugin.getDataFolder(), "stasis.yml");
+        // Always registered (even with rod stasis off): stand-ins left in chunks that weren't
+        // loaded when it was switched off are removed when those chunks load.
+        plugin.getServer().getPluginManager().registerEvents(new org.bukkit.event.Listener() {
+            @EventHandler
+            public void onLoad(EntitiesLoadEvent event) {
+                if (plugin.isEnabled(RodStasisModule.this)) return;
+                for (Entity e : event.getEntities()) if (isStandIn(e)) e.remove();
+            }
+        }, plugin);
     }
 
     @Override
@@ -78,6 +88,9 @@ public final class RodStasisModule extends Module {
     @Override
     public void disable() {
         save();
+        // Tasks that would release held chunks are cancelled on disable, so release them now.
+        for (World w : Bukkit.getWorlds()) w.removePluginChunkTickets(plugin);
+        held.clear();
     }
 
     private void save() {
@@ -129,6 +142,7 @@ public final class RodStasisModule extends Module {
             s.setRemoveWhenFarAway(false);
             s.getPersistentDataContainer().set(ownerKey, PersistentDataType.STRING, player.getUniqueId().toString());
         });
+        if (!stand.isValid()) return; // another plugin stopped the spawn: keep the real bobber
         hook.remove();
         active.put(player.getUniqueId(), new Stasis(at.getWorld().getUID(), at.getBlockX() >> 4, at.getBlockZ() >> 4,
                 stand.getUniqueId()));
@@ -161,16 +175,40 @@ public final class RodStasisModule extends Module {
         World world = Bukkit.getWorld(stasis.world());
         if (world == null) return;
         Chunk chunk = world.getChunkAt(stasis.chunkX(), stasis.chunkZ());
-        chunk.addPluginChunkTicket(plugin);
+        holdChunk(chunk);
         Entity entity = Bukkit.getEntity(stasis.standIn());
         if (entity != null) {
             entity.remove();
         } else {
-            for (Entity e : chunk.getEntities()) { // waits for the chunk's entities to load
+            // Its entities may not be loaded yet; if so, onEntitiesLoad removes it when they are.
+            for (Entity e : chunk.getEntities()) {
                 if (e.getUniqueId().equals(stasis.standIn())) e.remove();
             }
         }
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> chunk.removePluginChunkTicket(plugin), 100L);
+    }
+
+    /** Chunks kept loaded for a few seconds after a reel-in, counted per chunk (one ticket per plugin). */
+    private final Map<Chunk, Integer> held = new HashMap<>();
+
+    private void holdChunk(Chunk chunk) {
+        if (held.merge(chunk, 1, Integer::sum) == 1) chunk.addPluginChunkTicket(plugin);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            Integer left = held.computeIfPresent(chunk, (c, n) -> n > 1 ? n - 1 : null);
+            if (left == null) chunk.removePluginChunkTicket(plugin);
+        }, 100L);
+    }
+
+    /**
+     * Rod stasis was switched off: let go of every chamber (as if Paper had deleted the bobbers),
+     * instead of leaving plates held down forever.
+     */
+    @Override
+    public void turnedOff() {
+        for (UUID owner : new ArrayList<>(active.keySet())) removeStandIn(owner);
+        save();
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            for (World w : Bukkit.getWorlds()) w.removePluginChunkTickets(plugin);
+        }, 100L);
     }
 
     /** A stand-in whose owner already reeled in (e.g. while its chunk was unloaded) gets cleaned up. */

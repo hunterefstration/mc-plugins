@@ -122,7 +122,7 @@ class StringDupeTest {
     void disarmedStringInAttachedLineIsPutBack() {
         buildLine(true, true);
         Block target = block(2, 64, 0);
-        module.removed(target, false, new java.util.HashSet<>());
+        module.removed(target, false, new DupersModule.Removal(false));
         assertEquals(List.of(target), module.pendingBlocks());
         Tripwire placed = (Tripwire) module.pendingState(target);
         assertTrue(placed.isDisarmed());
@@ -133,21 +133,21 @@ class StringDupeTest {
     @Test
     void armedStringJustBreaks() {
         buildLine(true, false);
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
         assertTrue(module.pendingBlocks().isEmpty());
     }
 
     @Test
     void breakingWithShearsDisarmsItFirst() {
         buildLine(true, false);
-        module.removed(block(3, 64, 0), true, new java.util.HashSet<>());
+        module.removed(block(3, 64, 0), true, new DupersModule.Removal(false));
         assertEquals(1, module.pendingBlocks().size());
     }
 
     @Test
     void detachedLineDoesNothing() {
         buildLine(false, true);
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
         assertTrue(module.pendingBlocks().isEmpty());
     }
 
@@ -155,7 +155,7 @@ class StringDupeTest {
     void lineWithoutSecondHookDoesNothing() {
         buildLine(true, true);
         world.remove(List.of(5, 64, 0));
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
         assertTrue(module.pendingBlocks().isEmpty());
     }
 
@@ -163,7 +163,7 @@ class StringDupeTest {
     void wrongWayHookDoesNothing() {
         buildLine(true, true);
         world.put(List.of(0, 64, 0), new Object[]{Material.TRIPWIRE_HOOK, hook(BlockFace.WEST, true)});
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
         assertTrue(module.pendingBlocks().isEmpty());
     }
 
@@ -171,25 +171,59 @@ class StringDupeTest {
     void oneExplosionOnlyDupesOneStringPerLine() {
         // Vanilla removes exploded blocks one by one: the first string detaches the hooks.
         buildLine(true, true);
-        java.util.Set<Block> sameEvent = new java.util.HashSet<>();
-        module.removed(block(1, 64, 0), false, sameEvent);
-        module.removed(block(2, 64, 0), false, sameEvent);
+        module.explosion(List.of(block(1, 64, 0), block(2, 64, 0)));
         assertEquals(1, module.pendingBlocks().size());
+    }
+
+    @Test
+    void armedStringDupesWhenTheLineHasAGap() {
+        // 1.21.1: after one armed string is broken the hooks stay attached for up to 10 ticks;
+        // breaking a second one in that time puts the second back. (The hook is found by looking
+        // south/west through unbroken string, so the gap is on the east side here.)
+        buildLine(true, false);
+        world.remove(List.of(4, 64, 0)); // the first string is already gone
+        Block second = block(2, 64, 0);
+        module.removed(second, false, new DupersModule.Removal(false));
+        assertEquals(List.of(second), module.pendingBlocks());
+        assertFalse(((Tripwire) module.pendingState(second)).isAttached());
+    }
+
+    @Test
+    void gapOnTheSearchSideMeansNoHookIsFound() {
+        buildLine(true, false);
+        world.remove(List.of(1, 64, 0));
+        module.removed(block(3, 64, 0), false, new DupersModule.Removal(false));
+        assertTrue(module.pendingBlocks().isEmpty());
+    }
+
+    @Test
+    void explosionTakingTheHookFirstDoesNotDupe() {
+        buildLine(true, true);
+        module.explosion(List.of(block(0, 64, 0), block(2, 64, 0)));
+        assertTrue(module.pendingBlocks().isEmpty());
+    }
+
+    @Test
+    void explosionTakingTheHooksWallFirstDoesNotDupe() {
+        buildLine(true, true);
+        // The west hook faces east, so it hangs on the block west of it.
+        module.explosion(List.of(block(-1, 64, 0), block(2, 64, 0)));
+        assertTrue(module.pendingBlocks().isEmpty());
     }
 
     @Test
     void sameStringIsOnlyQueuedOnce() {
         buildLine(true, true);
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
-        module.removed(block(2, 64, 0), false, new java.util.HashSet<>());
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
+        module.removed(block(2, 64, 0), false, new DupersModule.Removal(false));
         assertEquals(1, module.pendingBlocks().size());
     }
 
     @Test
     void nonStringBlocksAreIgnored() {
         buildLine(true, true);
-        module.removed(block(0, 64, 0), false, new java.util.HashSet<>());
-        module.removed(block(9, 64, 9), false, new java.util.HashSet<>());
+        module.removed(block(0, 64, 0), false, new DupersModule.Removal(false));
+        module.removed(block(9, 64, 9), false, new DupersModule.Removal(false));
         assertTrue(module.pendingBlocks().isEmpty());
     }
 }

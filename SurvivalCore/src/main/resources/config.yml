@@ -58,11 +58,9 @@ instant-restock:
 # The End stays closed until you open it: the 12th eye of ender can't be placed and
 # existing end portals don't work. /endportal open | open in 2h | close
 # (survivalcore.endportal.bypass lets someone through anyway.)
+# (Whether it's open, and any timer, is kept in endportal.yml.)
 end-portal:
   enabled: true
-  open: false
-  # Set by "/endportal open in <time>" (epoch millis). 0 = no timer.
-  opens-at: 0
   closed-message: "The End is closed for now."
 
 # String dupers and tripwire hook dupers, working the vanilla way.

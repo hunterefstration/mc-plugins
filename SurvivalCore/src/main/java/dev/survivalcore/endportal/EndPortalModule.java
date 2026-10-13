@@ -41,11 +41,27 @@ public final class EndPortalModule extends Module {
 
     public EndPortalModule(SurvivalCore plugin) {
         super(plugin, "end-portal", "EndPortal");
+        this.stateFile = new java.io.File(plugin.getDataFolder(), "endportal.yml");
         plugin.bind("endportal", this, new EndPortalCommand());
     }
 
+    private final java.io.File stateFile;
+    private boolean open;
+    private long opensAt;
+
     @Override
     public void enable() {
+        org.bukkit.configuration.file.YamlConfiguration state =
+                org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(stateFile);
+        if (stateFile.exists()) {
+            open = state.getBoolean("open", false);
+            opensAt = state.getLong("opens-at", 0);
+        } else {
+            // Earlier versions kept this in config.yml.
+            open = config().getBoolean("open", false);
+            opensAt = config().getLong("opens-at", 0);
+            saveState();
+        }
         scheduleTimer();
     }
 
@@ -55,36 +71,43 @@ public final class EndPortalModule extends Module {
         timer = null;
     }
 
+    private void saveState() {
+        org.bukkit.configuration.file.YamlConfiguration state = new org.bukkit.configuration.file.YamlConfiguration();
+        state.set("open", open);
+        state.set("opens-at", opensAt);
+        try {
+            state.save(stateFile);
+        } catch (java.io.IOException e) {
+            plugin.getLogger().log(java.util.logging.Level.WARNING, "Could not save endportal.yml", e);
+        }
+    }
+
     public boolean isOpen() {
-        if (config().getBoolean("open", false)) return true;
-        long opensAt = config().getLong("opens-at", 0);
+        if (open) return true;
         if (opensAt > 0 && System.currentTimeMillis() >= opensAt) {
-            setOpen(true);
+            setOpen(true); // the timer ran out (whoever notices first opens it, and it's announced)
             return true;
         }
         return false;
     }
 
-    private void setOpen(boolean open) {
-        config().set("open", open);
-        config().set("opens-at", 0);
-        plugin.saveConfig();
+    private void setOpen(boolean nowOpen) {
+        boolean wasOpen = open;
+        open = nowOpen;
+        opensAt = 0;
+        saveState();
         if (timer != null) timer.cancel();
         timer = null;
+        if (nowOpen && !wasOpen) {
+            plugin.getServer().broadcastMessage(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "The End is now open!");
+        }
     }
 
     private void scheduleTimer() {
         if (timer != null) timer.cancel();
         timer = null;
-        long opensAt = config().getLong("opens-at", 0);
-        if (opensAt <= 0 || config().getBoolean("open", false)) return;
-        timer = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
-            if (System.currentTimeMillis() >= config().getLong("opens-at", Long.MAX_VALUE)) {
-                setOpen(true);
-                plugin.getServer().broadcastMessage(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD
-                        + "The End is now open!");
-            }
-        }, 20L, 20L);
+        if (opensAt <= 0 || open) return;
+        timer = plugin.getServer().getScheduler().runTaskTimer(plugin, this::isOpen, 20L, 20L);
     }
 
     // ------------------------------------------------------------------ blocking
@@ -124,8 +147,10 @@ public final class EndPortalModule extends Module {
             for (int offset = -1; offset <= 1; offset++) {
                 Block b = center.getRelative(face, 2).getRelative(side, offset);
                 if (b.getType() != Material.END_PORTAL_FRAME) return false;
+                // Vanilla only lights a ring whose frames all face inwards.
+                if (!(b.getBlockData() instanceof EndPortalFrame f) || f.getFacing() != face.getOppositeFace()) return false;
                 if (b.equals(adding)) continue;
-                if (!(b.getBlockData() instanceof EndPortalFrame f) || !f.hasEye()) return false;
+                if (!f.hasEye()) return false;
             }
         }
         return true;
@@ -186,7 +211,6 @@ public final class EndPortalModule extends Module {
     }
 
     private String closedMessage() {
-        long opensAt = config().getLong("opens-at", 0);
         String base = config().getString("closed-message", "The End is closed for now.");
         if (opensAt > System.currentTimeMillis()) {
             return base + " It opens in " + format(Duration.ofMillis(opensAt - System.currentTimeMillis())) + ".";
@@ -205,22 +229,30 @@ public final class EndPortalModule extends Module {
         return String.join(" ", parts);
     }
 
-    /** "2h30m", "1d", "45 m" -> duration, or null. */
+    /** Longest timer allowed (10 years), so huge numbers can't overflow. */
+    private static final long MAX_SECONDS = 3650L * 86400;
+
+    /** "2h30m", "1d", "45 m" -> duration, or null (also for nonsense or absurdly long times). */
     static Duration parseDuration(String text) {
         Matcher m = DURATION.matcher(text.toLowerCase(Locale.ROOT));
         long seconds = 0;
         boolean any = false;
-        while (m.find()) {
-            any = true;
-            long n = Long.parseLong(m.group(1));
-            seconds += switch (m.group(2)) {
-                case "d" -> n * 86400;
-                case "h" -> n * 3600;
-                case "m" -> n * 60;
-                default -> n;
-            };
+        try {
+            while (m.find()) {
+                any = true;
+                long n = Long.parseLong(m.group(1));
+                long unit = switch (m.group(2)) {
+                    case "d" -> 86400;
+                    case "h" -> 3600;
+                    case "m" -> 60;
+                    default -> 1;
+                };
+                seconds = Math.addExact(seconds, Math.multiplyExact(n, unit));
+            }
+        } catch (NumberFormatException | ArithmeticException e) {
+            return null;
         }
-        return any && seconds > 0 ? Duration.ofSeconds(seconds) : null;
+        return any && seconds > 0 && seconds <= MAX_SECONDS ? Duration.ofSeconds(seconds) : null;
     }
 
     private final class EndPortalCommand implements TabExecutor {
@@ -232,12 +264,12 @@ public final class EndPortalModule extends Module {
                     if (args.length >= 3 && args[1].equalsIgnoreCase("in")) {
                         Duration d = parseDuration(String.join("", java.util.Arrays.copyOfRange(args, 2, args.length)));
                         if (d == null) {
-                            sender.sendMessage(prefix() + ChatColor.RED + "Usage: /" + label + " open in 2h30m");
+                            sender.sendMessage(prefix() + ChatColor.RED + "Usage: /" + label + " open in 2h30m (up to 10 years)");
                             return true;
                         }
-                        config().set("open", false);
-                        config().set("opens-at", Instant.now().plus(d).toEpochMilli());
-                        plugin.saveConfig();
+                        open = false;
+                        opensAt = Instant.now().plus(d).toEpochMilli();
+                        saveState();
                         scheduleTimer();
                         sender.sendMessage(prefix() + ChatColor.GREEN + "The End will open in " + format(d) + ".");
                     } else {
@@ -251,7 +283,6 @@ public final class EndPortalModule extends Module {
                             + " and existing portals won't work.");
                 }
                 default -> {
-                    long opensAt = config().getLong("opens-at", 0);
                     if (isOpen()) {
                         sender.sendMessage(prefix() + ChatColor.GREEN + "The End is open.");
                     } else if (opensAt > 0) {

@@ -4,12 +4,16 @@ import dev.survivalcore.Module;
 import dev.survivalcore.SurvivalCore;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.GameRule;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.attribute.AttributeModifier;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.command.Command;
@@ -17,16 +21,22 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.Ageable;
+import org.bukkit.entity.Creeper;
+import org.bukkit.entity.Enderman;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.FishHook;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mob;
+import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDispenseLootEvent;
 import org.bukkit.event.block.BlockDropItemEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.PiglinBarterEvent;
 import org.bukkit.event.player.PlayerFishEvent;
@@ -40,16 +50,19 @@ import org.bukkit.loot.LootContext;
 import org.bukkit.loot.LootTable;
 import org.bukkit.loot.LootTables;
 import org.bukkit.loot.Lootable;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -62,15 +75,24 @@ import java.util.logging.Level;
  * luck, and they get the best result. This covers loot chests, barrels and minecart chests, trial
  * vaults, trial spawner rewards, fishing, mob drops, block drops (ores, leaves, gravel...) and
  * piglin bartering. It also adds N to their Luck attribute, which vanilla uses for anything
- * luck-based.
+ * luck-based. Only the loot itself is ever swapped: anything else in a drop is left alone.
  */
 public final class LuckModule extends Module {
 
     private static final int MAX_LEVEL = 50;
+    /**
+     * Chest loot that creates explorer maps: every roll would search for a structure and save a
+     * new map, so these are never re-rolled.
+     */
+    private static final Set<String> MAP_TABLES = Set.of("chests/shipwreck_map", "chests/underwater_ruin_big",
+            "chests/underwater_ruin_small");
+
     private final NamespacedKey modifierKey;
     private final File file;
     private final Map<UUID, Integer> levels = new HashMap<>();
     private final Random random = new Random();
+    /** Neighbours of blocks boosted players are breaking, to tell popped-off items from the block's own drops. */
+    private final Map<Block, Map<Block, BlockState>> neighbours = new HashMap<>();
 
     public LuckModule(SurvivalCore plugin) {
         super(plugin, "luck-boost", "LuckBoost");
@@ -87,6 +109,7 @@ public final class LuckModule extends Module {
     @Override
     public void enable() {
         levels.clear();
+        neighbours.clear();
         YamlConfiguration data = YamlConfiguration.loadConfiguration(file);
         var section = data.getConfigurationSection("players");
         if (section != null) {
@@ -104,6 +127,7 @@ public final class LuckModule extends Module {
     @Override
     public void disable() {
         for (Player p : Bukkit.getOnlinePlayers()) removeAttribute(p);
+        neighbours.clear();
     }
 
     private void save() {
@@ -144,14 +168,6 @@ public final class LuckModule extends Module {
 
     // ------------------------------------------------------------------ best of several rolls
 
-    /**
-     * Rolls {@code roll} level more times. Returns the best roll if one beats the original, or null
-     * if the original is still the best.
-     */
-    private List<ItemStack> best(Collection<ItemStack> original, int level, Supplier<Collection<ItemStack>> roll) {
-        return pick(original, rolls(level, roll));
-    }
-
     /** Rolls the table {@code level} times (stops early if the table can't be rolled from here). */
     private List<Collection<ItemStack>> rolls(int level, Supplier<Collection<ItemStack>> roll) {
         List<Collection<ItemStack>> rolls = new ArrayList<>();
@@ -179,26 +195,30 @@ public final class LuckModule extends Module {
         return best;
     }
 
-    /** Every item type any of the rolls produced: what this loot table can give. */
-    private static java.util.Set<org.bukkit.Material> types(List<Collection<ItemStack>> rolls) {
-        java.util.Set<org.bukkit.Material> types = java.util.EnumSet.noneOf(org.bukkit.Material.class);
+    private List<ItemStack> best(Collection<ItemStack> original, int level, Supplier<Collection<ItemStack>> roll) {
+        return pick(original, rolls(level, roll));
+    }
+
+    /** Every item type any of the rolls produced. */
+    private static Set<Material> types(List<Collection<ItemStack>> rolls) {
+        Set<Material> types = EnumSet.noneOf(Material.class);
         for (Collection<ItemStack> r : rolls) for (ItemStack i : r) if (i != null) types.add(i.getType());
         return types;
     }
 
-    private LootContext context(Location at, float baseLuck, int level, Entity looted, Player player, int looting) {
+    /** The same luck rule everywhere: the player's own luck (without our bonus) plus the boost level. */
+    private static float luckFor(Player player, int level) {
+        AttributeInstance luck = player.getAttribute(Attribute.LUCK);
+        float own = luck == null ? 0 : (float) luck.getValue() - level;
+        return own + level;
+    }
+
+    private LootContext context(Location at, Player player, int level, Entity looted, float extraLuck) {
         return new LootContext.Builder(at)
-                .luck(baseLuck + level)
-                .lootingModifier(looting)
+                .luck(luckFor(player, level) + extraLuck)
                 .lootedEntity(looted)
                 .killer(player)
                 .build();
-    }
-
-    /** The player's luck without our boost (it's added separately). */
-    private static float baseLuck(Player player, int level) {
-        AttributeInstance luck = player.getAttribute(Attribute.LUCK);
-        return luck == null ? 0 : (float) luck.getValue() - level;
     }
 
     /** The boosted player nearest to a spot (for loot that isn't tied to one player). */
@@ -218,31 +238,31 @@ public final class LuckModule extends Module {
 
     // ------------------------------------------------------------------ loot chests, barrels, minecart chests
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    /** LOWEST: swap the vanilla loot before other plugins add their own items. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onContainerLoot(LootGenerateEvent event) {
         if (event.isPlugin()) return;
         Player player = event.getEntity() instanceof Player p ? p : null;
-        if (player == null) return;
         int level = level(player);
         if (level <= 0) return;
-        LootContext base = event.getLootContext();
         LootTable table = event.getLootTable();
-        LootContext ctx = context(base.getLocation(), base.getLuck(), level, base.getLootedEntity(), player,
-                base.getLootingModifier());
+        if (MAP_TABLES.contains(table.getKey().getKey())) return;
+        LootContext base = event.getLootContext();
+        LootContext ctx = context(base.getLocation(), player, level, base.getLootedEntity(), 0);
         List<ItemStack> best = best(event.getLoot(), level, () -> table.populateLoot(random, ctx));
         if (best != null) event.setLoot(best);
     }
 
     // ------------------------------------------------------------------ trial vaults and trial spawners
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onDispenseLoot(BlockDispenseLootEvent event) {
         Location at = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
         Player player = event.getPlayer() != null ? event.getPlayer() : nearestBoosted(at, 16);
         int level = level(player);
         if (level <= 0) return;
         LootTable table = event.getLootTable();
-        LootContext ctx = context(at, 0, level, player, player, 0);
+        LootContext ctx = context(at, player, level, player, 0);
         List<ItemStack> best = best(event.getDispensedLoot(), level, () -> table.populateLoot(random, ctx));
         if (best != null) event.setDispensedLoot(best);
     }
@@ -258,70 +278,95 @@ public final class LuckModule extends Module {
         FishHook hook = event.getHook();
         ItemStack rod = event.getHand() == EquipmentSlot.OFF_HAND
                 ? player.getInventory().getItemInOffHand() : player.getInventory().getItemInMainHand();
-        float luck = rod.getEnchantmentLevel(Enchantment.LUCK_OF_THE_SEA) + baseLuck(player, level);
         LootTable table = LootTables.FISHING.getLootTable();
-        LootContext ctx = context(hook.getLocation(), luck, level, hook, player, 0);
+        LootContext ctx = context(hook.getLocation(), player, level, hook, rod.getEnchantmentLevel(Enchantment.LUCK_OF_THE_SEA));
         List<ItemStack> best = best(List.of(caught.getItemStack()), level, () -> table.populateLoot(random, ctx));
         if (best == null || best.isEmpty()) return;
         caught.setItemStack(best.get(0));
         for (int i = 1; i < best.size(); i++) {
+            // Thrown towards the player the same way vanilla throws the catch.
             Item extra = caught.getWorld().dropItem(caught.getLocation(), best.get(i));
-            extra.setVelocity(caught.getVelocity());
+            Vector d = player.getLocation().toVector().subtract(caught.getLocation().toVector());
+            extra.setVelocity(new Vector(d.getX() * 0.1, d.getY() * 0.1 + Math.sqrt(d.length()) * 0.08, d.getZ() * 0.1));
         }
     }
 
     // ------------------------------------------------------------------ mob drops
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    /** LOWEST: before other plugins add drops, so only the vanilla loot is ever swapped. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onMobDeath(EntityDeathEvent event) {
         LivingEntity dead = event.getEntity();
         if (dead instanceof Player || dead instanceof InventoryHolder || !(dead instanceof Mob)) return;
         Player killer = dead.getKiller();
         int level = level(killer);
         if (level <= 0 || !(dead instanceof Lootable lootable) || lootable.getLootTable() == null) return;
-        // Babies and doMobLoot=false drop nothing from the loot table; don't invent loot for them.
-        if (dead instanceof org.bukkit.entity.Ageable a && !a.isAdult()) return;
-        if (Boolean.FALSE.equals(dead.getWorld().getGameRuleValue(org.bukkit.GameRule.DO_MOB_LOOT))) return;
+        // Same rules as vanilla for whether the loot table drops anything at all.
+        if (Boolean.FALSE.equals(dead.getWorld().getGameRuleValue(GameRule.DO_MOB_LOOT))) return;
+        if (dead instanceof Ageable a && !a.isAdult() && !(dead instanceof Monster)) return;
+        // Killed by a charged creeper: the skull it drops isn't loot-table loot; leave it all alone.
+        if (dead.getLastDamageCause() instanceof EntityDamageByEntityEvent hit && hit.getDamager() instanceof Creeper) return;
 
-        int looting = killer.getInventory().getItemInMainHand().getEnchantmentLevel(Enchantment.LOOTING);
-        LootTable table = lootable.getLootTable();
-        LootContext ctx = context(dead.getLocation(), baseLuck(killer, level), level, dead, killer, looting);
-        List<Collection<ItemStack>> rolls = rolls(level, () -> table.populateLoot(random, ctx));
-        java.util.Set<org.bukkit.Material> tableTypes = types(rolls);
-
-        // Only swap what the loot table made. Keep worn/held items (maybe a player's), an enderman's
-        // block, charged-creeper skulls and anything other plugins added.
+        // Split what dropped into loot-table loot and everything else: worn/held items (each slot
+        // matches at most one drop) and an enderman's carried block.
         List<ItemStack> kept = new ArrayList<>();
-        List<ItemStack> fromTable = new ArrayList<>();
+        List<ItemStack> fromTable = new ArrayList<>(event.getDrops());
         EntityEquipment equipment = dead.getEquipment();
-        for (ItemStack drop : event.getDrops()) {
-            boolean worn = equipment != null && isEquipment(equipment, drop);
-            if (!worn && tableTypes.contains(drop.getType())) fromTable.add(drop);
-            else kept.add(drop);
+        if (equipment != null) {
+            for (EquipmentSlot slot : EquipmentSlot.values()) {
+                ItemStack worn;
+                try {
+                    worn = equipment.getItem(slot);
+                } catch (IllegalArgumentException e) {
+                    continue; // slot not supported by this mob
+                }
+                if (worn == null || worn.getType().isAir()) continue;
+                takeFirst(fromTable, worn, kept);
+            }
         }
-        List<ItemStack> best = pick(fromTable, rolls);
+        if (dead instanceof Enderman enderman && enderman.getCarriedBlock() != null) {
+            takeFirst(fromTable, new ItemStack(enderman.getCarriedBlock().getMaterial()), kept);
+        }
+
+        LootTable table = lootable.getLootTable();
+        LootContext ctx = context(dead.getLocation(), killer, level, dead, 0);
+        List<ItemStack> best = best(fromTable, level, () -> table.populateLoot(random, ctx));
         if (best == null) return;
         event.getDrops().clear();
         event.getDrops().addAll(best);
         event.getDrops().addAll(kept);
     }
 
-    private static boolean isEquipment(EntityEquipment equipment, ItemStack drop) {
-        for (EquipmentSlot slot : EquipmentSlot.values()) {
-            try {
-                ItemStack worn = equipment.getItem(slot);
-                if (worn != null && !worn.getType().isAir() && worn.isSimilar(drop)) return true;
-            } catch (IllegalArgumentException ignored) {
-                // slot not supported by this mob
+    /** Moves the first drop that is the same item as {@code like} from {@code from} to {@code to}. */
+    private static void takeFirst(List<ItemStack> from, ItemStack like, List<ItemStack> to) {
+        for (int i = 0; i < from.size(); i++) {
+            if (from.get(i).isSimilar(like)) {
+                to.add(from.remove(i));
+                return;
             }
         }
-        return false;
     }
 
     // ------------------------------------------------------------------ block drops
 
+    /** Remember the neighbours, so items that pop off them (torches, rails...) aren't mistaken for loot. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBreak(BlockBreakEvent event) {
+        if (level(event.getPlayer()) <= 0) return;
+        Map<Block, BlockState> around = new HashMap<>();
+        for (BlockFace f : new BlockFace[]{BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH, BlockFace.SOUTH,
+                BlockFace.EAST, BlockFace.WEST}) {
+            Block n = event.getBlock().getRelative(f);
+            if (!n.getType().isAir()) around.put(n, n.getState());
+        }
+        neighbours.put(event.getBlock(), around);
+        // Normally used straight away by the drop event; never kept past this tick.
+        plugin.getServer().getScheduler().runTask(plugin, () -> neighbours.remove(event.getBlock()));
+    }
+
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onBlockDrop(BlockDropItemEvent event) {
+        Map<Block, BlockState> around = neighbours.remove(event.getBlock());
         Player player = event.getPlayer();
         int level = level(player);
         if (level <= 0 || event.getItems().isEmpty()) return;
@@ -331,16 +376,22 @@ public final class LuckModule extends Module {
         ItemStack tool = player.getInventory().getItemInMainHand();
 
         List<Collection<ItemStack>> rolls = rolls(level, () -> state.getDrops(tool, player));
-        java.util.Set<org.bukkit.Material> tableTypes = types(rolls);
-        // Only the block's own drops are swapped. Torches, signs, rails, crops... that popped off
-        // the block at the same time are left exactly as they are.
+        Set<Material> rollTypes = types(rolls);
+        // What popped off neighbours that broke along with it (a torch on the ore, a rail on top...).
+        Set<Material> poppedTypes = EnumSet.noneOf(Material.class);
+        if (around != null) {
+            for (Map.Entry<Block, BlockState> e : around.entrySet()) {
+                if (e.getKey().getType() == e.getValue().getType()) continue; // still there
+                for (ItemStack d : e.getValue().getDrops()) poppedTypes.add(d.getType());
+            }
+        }
         List<Item> own = new ArrayList<>();
         List<ItemStack> original = new ArrayList<>();
         for (Item item : event.getItems()) {
-            if (tableTypes.contains(item.getItemStack().getType())) {
-                own.add(item);
-                original.add(item.getItemStack());
-            }
+            Material type = item.getItemStack().getType();
+            if (poppedTypes.contains(type) && !rollTypes.contains(type)) continue; // a neighbour's drop
+            own.add(item);
+            original.add(item.getItemStack());
         }
         if (own.isEmpty()) return;
         List<ItemStack> best = pick(original, rolls);
@@ -349,24 +400,25 @@ public final class LuckModule extends Module {
         int i = 0;
         for (; i < best.size() && i < own.size(); i++) own.get(i).setItemStack(best.get(i));
         for (int j = i; j < own.size(); j++) event.getItems().remove(own.get(j));
-        if (i < best.size()) {
-            Location at = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
-            List<ItemStack> extra = new ArrayList<>(best.subList(i, best.size()));
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                for (ItemStack stack : extra) at.getWorld().dropItemNaturally(at, stack);
-            });
+        // Extra stacks join the event's list, so they only spawn if the drop isn't cancelled
+        // (and other plugins, like VeinMiner's gathering, see them too).
+        Location at = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
+        for (; i < best.size(); i++) {
+            Item extra = at.getWorld().createEntity(at, Item.class);
+            extra.setItemStack(best.get(i));
+            event.getItems().add(extra);
         }
     }
 
     // ------------------------------------------------------------------ piglin bartering
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBarter(PiglinBarterEvent event) {
         Player player = nearestBoosted(event.getEntity().getLocation(), 12);
         int level = level(player);
         if (level <= 0) return;
         LootTable table = LootTables.PIGLIN_BARTERING.getLootTable();
-        LootContext ctx = context(event.getEntity().getLocation(), 0, level, event.getEntity(), player, 0);
+        LootContext ctx = context(event.getEntity().getLocation(), player, level, event.getEntity(), 0);
         List<ItemStack> best = best(event.getOutcome(), level, () -> table.populateLoot(random, ctx));
         if (best == null) return;
         event.getOutcome().clear();
@@ -385,9 +437,10 @@ public final class LuckModule extends Module {
                 sender.sendMessage(ChatColor.DARK_GRAY + "/" + label + " <player> <level 1-" + MAX_LEVEL + "|off>");
                 return true;
             }
-            @SuppressWarnings("deprecation")
-            OfflinePlayer target = Bukkit.getOfflinePlayer(args[0]);
-            if (!target.hasPlayedBefore() && !target.isOnline()) {
+            // Only players this server knows: never a blocking lookup on Mojang's servers for a typo.
+            OfflinePlayer target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) target = Bukkit.getOfflinePlayerIfCached(args[0]);
+            if (target == null || (!target.hasPlayedBefore() && !target.isOnline())) {
                 sender.sendMessage(ChatColor.RED + args[0] + " has never joined this server.");
                 return true;
             }

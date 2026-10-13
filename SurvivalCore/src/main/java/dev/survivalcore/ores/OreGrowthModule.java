@@ -2,6 +2,7 @@ package dev.survivalcore.ores;
 
 import dev.survivalcore.Module;
 import dev.survivalcore.SurvivalCore;
+import dev.survivalcore.util.PlacedBlocks;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.GameMode;
@@ -46,7 +47,7 @@ public final class OreGrowthModule extends Module {
             BlockFace.EAST, BlockFace.WEST};
     private static final Set<Material> HOSTS = Set.of(Material.STONE, Material.DEEPSLATE, Material.NETHERRACK);
 
-    private final NamespacedKey placedKey;
+    private final PlacedBlocks placed;
     private final NamespacedKey grownKey;
     private final Map<Material, Map<Material, Integer>> weights = new EnumMap<>(Material.class);
     private BukkitTask task;
@@ -62,7 +63,7 @@ public final class OreGrowthModule extends Module {
 
     public OreGrowthModule(SurvivalCore plugin) {
         super(plugin, "ore-growth", "OreGrowth");
-        this.placedKey = new NamespacedKey(plugin, "placed_hosts");
+        this.placed = new PlacedBlocks(new NamespacedKey(plugin, "placed_hosts"));
         this.grownKey = new NamespacedKey(plugin, "grown_veins");
     }
 
@@ -163,7 +164,7 @@ public final class OreGrowthModule extends Module {
         seen.add(origin);
         while (!queue.isEmpty() && vein.size() < size) {
             Block b = queue.poll();
-            if (b != origin && (b.getType() != host || !isHiddenNatural(b, host))) continue;
+            if (b != origin && (b.getType() != host || !isHiddenNatural(b, host) || !heightOk(b, ore))) continue;
             vein.add(b);
             List<BlockFace> faces = new ArrayList<>(Arrays.asList(FACES));
             java.util.Collections.shuffle(faces, rnd);
@@ -182,6 +183,12 @@ public final class OreGrowthModule extends Module {
 
     private int grownIn(Chunk chunk) {
         return chunk.getPersistentDataContainer().getOrDefault(grownKey, PersistentDataType.INTEGER, 0);
+    }
+
+    /** Every block of a vein stays within the height limits, not just the first. */
+    private boolean heightOk(Block b, Material ore) {
+        if (b.getWorld().getEnvironment() == World.Environment.NORMAL && b.getY() > overworldMaxY) return false;
+        return fitsHeight(ore, b.getY());
     }
 
     /** Every side touches a solid, opaque block, and no player put it there. */
@@ -235,46 +242,19 @@ public final class OreGrowthModule extends Module {
 
     // ------------------------------------------------------------------ remembering placed blocks
 
-    private static long pack(Block b) {
-        return ((long) (b.getX() & 15) << 40) | ((long) (b.getZ() & 15) << 32) | (b.getY() & 0xFFFFFFFFL);
-    }
-
     private boolean isPlaced(Block block) {
-        long[] placed = block.getChunk().getPersistentDataContainer().get(placedKey, PersistentDataType.LONG_ARRAY);
-        if (placed == null) return false;
-        long key = pack(block);
-        for (long l : placed) if (l == key) return true;
-        return false;
-    }
-
-    private void setPlaced(Block block, boolean placed) {
-        PersistentDataContainer pdc = block.getChunk().getPersistentDataContainer();
-        long[] current = pdc.getOrDefault(placedKey, PersistentDataType.LONG_ARRAY, new long[0]);
-        long key = pack(block);
-        int index = -1;
-        for (int i = 0; i < current.length; i++) if (current[i] == key) index = i;
-        if (placed && index < 0) {
-            long[] next = Arrays.copyOf(current, current.length + 1);
-            next[current.length] = key;
-            pdc.set(placedKey, PersistentDataType.LONG_ARRAY, next);
-        } else if (!placed && index >= 0) {
-            long[] next = new long[current.length - 1];
-            System.arraycopy(current, 0, next, 0, index);
-            System.arraycopy(current, index + 1, next, index, current.length - index - 1);
-            if (next.length == 0) pdc.remove(placedKey);
-            else pdc.set(placedKey, PersistentDataType.LONG_ARRAY, next);
-        }
+        return placed.contains(block);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlace(BlockPlaceEvent event) {
-        if (HOSTS.contains(event.getBlockPlaced().getType())) setPlaced(event.getBlockPlaced(), true);
+        if (HOSTS.contains(event.getBlockPlaced().getType())) placed.set(event.getBlockPlaced(), true);
     }
 
     /** Stone made by lava and water (generators) isn't natural either. */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onForm(BlockFormEvent event) {
-        if (HOSTS.contains(event.getNewState().getType())) setPlaced(event.getBlock(), true);
+        if (HOSTS.contains(event.getNewState().getType())) placed.set(event.getBlock(), true);
     }
 
     /** Placed stone moved by pistons stays "placed" at its new spot. */
@@ -291,12 +271,38 @@ public final class OreGrowthModule extends Module {
     private void movePlaced(List<Block> blocks, BlockFace direction) {
         List<Block> moving = new ArrayList<>();
         for (Block b : blocks) if (HOSTS.contains(b.getType()) && isPlaced(b)) moving.add(b);
-        for (Block b : moving) setPlaced(b, false);
-        for (Block b : moving) setPlaced(b.getRelative(direction), true);
+        for (Block b : moving) placed.set(b, false);
+        for (Block b : moving) placed.set(b.getRelative(direction), true);
     }
+
+    // Forget placed blocks that are gone, however they went, so the records don't pile up.
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBreak(BlockBreakEvent event) {
-        if (HOSTS.contains(event.getBlock().getType())) setPlaced(event.getBlock(), false);
+        forget(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
+        for (Block b : event.blockList()) forget(b);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
+        for (Block b : event.blockList()) forget(b);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityChangeBlock(org.bukkit.event.entity.EntityChangeBlockEvent event) {
+        if (event.getTo() != event.getBlock().getType()) forget(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBurn(org.bukkit.event.block.BlockBurnEvent event) {
+        forget(event.getBlock());
+    }
+
+    private void forget(Block b) {
+        if (HOSTS.contains(b.getType())) placed.set(b, false);
     }
 }

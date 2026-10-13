@@ -8,7 +8,7 @@ import java.util.logging.Level;
 
 /**
  * A set of Paper settings a module wants changed. They are applied on enable, put back on
- * disable, and re-applied every 30 seconds in case /paper reload reset them.
+ * disable, and re-applied within a second if /paper reload resets them.
  */
 public final class PaperSettings {
 
@@ -40,7 +40,7 @@ public final class PaperSettings {
             }
         }
         if (task == null && !wanted.isEmpty()) {
-            task = plugin.getServer().getScheduler().runTaskTimer(plugin, this::reapply, 600L, 600L);
+            task = plugin.getServer().getScheduler().runTaskTimer(plugin, this::reapply, 20L, 20L);
         }
     }
 
@@ -48,7 +48,12 @@ public final class PaperSettings {
         for (Map.Entry<String, Boolean> e : wanted.entrySet()) {
             String[] parts = e.getKey().split("\\.");
             try {
-                if (PaperConfig.get(parts[0], parts[1]) != e.getValue()) PaperConfig.set(parts[0], parts[1], e.getValue());
+                boolean now = PaperConfig.get(parts[0], parts[1]);
+                if (now != e.getValue()) {
+                    // /paper reload read paper-global.yml again: that's the admin's value now.
+                    originals.put(e.getKey(), now);
+                    PaperConfig.set(parts[0], parts[1], e.getValue());
+                }
             } catch (ReflectiveOperationException | RuntimeException ignored) {
             }
         }
@@ -60,6 +65,9 @@ public final class PaperSettings {
         for (Map.Entry<String, Boolean> e : originals.entrySet()) {
             String[] parts = e.getKey().split("\\.");
             try {
+                // Only undo our own change (if something else changed it since, leave that alone).
+                Boolean ours = wanted.get(e.getKey());
+                if (ours != null && PaperConfig.get(parts[0], parts[1]) != ours) continue;
                 PaperConfig.set(parts[0], parts[1], e.getValue());
             } catch (ReflectiveOperationException | RuntimeException ignored) {
             }

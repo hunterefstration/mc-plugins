@@ -77,6 +77,23 @@ class EndPortalTest {
     }
 
     @Test
+    void ringWithAFrameFacingOutwardsNeverLights() {
+        List<Block> frames = ring(50, 30, 50, 11);
+        Block wrong = frames.get(3);
+        EndPortalFrame data = (EndPortalFrame) wrong.getBlockData();
+        data.setFacing(data.getFacing().getOppositeFace());
+        wrong.setBlockData(data);
+        assertFalse(EndPortalModule.wouldComplete(frames.get(11)));
+    }
+
+    @Test
+    void absurdTimersAreRejected() {
+        assertNull(EndPortalModule.parseDuration("99999999999999999999s"));
+        assertNull(EndPortalModule.parseDuration("999999999999d"));
+        assertNull(EndPortalModule.parseDuration("4000d"));
+    }
+
+    @Test
     void parsesAndFormatsDurations() {
         assertEquals(Duration.ofMinutes(150), EndPortalModule.parseDuration("2h30m"));
         assertEquals(Duration.ofDays(1), EndPortalModule.parseDuration("1d"));

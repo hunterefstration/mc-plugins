@@ -1,72 +1,96 @@
 package dev.survivalcore.enderchest;
 
-import dev.survivalcore.util.Holders;
 import dev.survivalcore.Module;
 import dev.survivalcore.SurvivalCore;
+import dev.survivalcore.util.Holders;
 import dev.survivalcore.util.Nbt;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.GameEvent;
+import org.bukkit.GameMode;
+import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Statistic;
 import org.bukkit.block.Block;
-import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
 import org.bukkit.block.Lidded;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.HumanEntity;
+import org.bukkit.entity.Piglin;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.memory.MemoryKey;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 
 /**
  * Bigger ender chests (up to 6 rows). The first 3 rows are the player's normal vanilla ender
- * chest, so nothing is lost if this is ever turned off; the extra rows are saved in
- * plugins/SurvivalCore/enderchests/. Players coming from BetterEnderChest get their chest
- * imported automatically the first time they open it.
+ * chest, so nothing is lost if this is ever turned off. The extra rows are kept in the player's
+ * own save data, so they're always saved together with their inventory (a crash can't dupe or
+ * lose items between the two). Players coming from BetterEnderChest get their chest imported the
+ * first time they open it.
  */
 public final class EnderChestModule extends Module {
 
     private static final int VANILLA_SIZE = 27;
 
-    private final File folder;
-    private final File importedFile;
+    private final NamespacedKey extraKey;
+    private final NamespacedKey pendingKey;
+    private final NamespacedKey importedKey;
+    private final NamespacedKey importFailedKey;
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Map<Location, Integer> openLids = new HashMap<>();
-    private Set<String> imported = new HashSet<>();
-    private Set<String> failed = new HashSet<>();
+    private final Map<UUID, Location> viewerChests = new HashMap<>();
+    private final Set<UUID> pendingSaves = new HashSet<>();
+    /** Players whose BetterEnderChest import already failed since the server started (don't retry every open). */
+    private final Set<UUID> importTriedThisRun = new HashSet<>();
+    private BukkitTask validityTask;
 
     /** One open ender chest, shared by everyone looking at it. */
     private final class Session implements InventoryHolder {
         final UUID owner;
         final Player ownerPlayer;
         Inventory inventory;
+        /** The vanilla ender chest as we last wrote it, to spot changes made by anything else. */
+        ItemStack[] lastVanilla = new ItemStack[VANILLA_SIZE];
         final Set<UUID> viewers = new HashSet<>();
 
         Session(Player owner) {
@@ -82,21 +106,22 @@ public final class EnderChestModule extends Module {
 
     public EnderChestModule(SurvivalCore plugin) {
         super(plugin, "ender-chest", "EnderChest");
-        this.folder = new File(plugin.getDataFolder(), "enderchests");
-        this.importedFile = new File(folder, "imported-from-betterenderchest.yml");
+        this.extraKey = new NamespacedKey(plugin, "ender_chest_extra");
+        this.pendingKey = new NamespacedKey(plugin, "ender_chest_waiting");
+        this.importedKey = new NamespacedKey(plugin, "ender_chest_bec_imported");
+        this.importFailedKey = new NamespacedKey(plugin, "ender_chest_bec_failed");
         plugin.bind("enderchest", this, new EnderChestCommand());
     }
 
     @Override
     public void enable() {
-        folder.mkdirs();
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(importedFile);
-        imported = new HashSet<>(yaml.getStringList("players"));
-        failed = new HashSet<>(yaml.getStringList("failed"));
+        validityTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::checkStillValid, 10L, 10L);
     }
 
     @Override
     public void disable() {
+        if (validityTask != null) validityTask.cancel();
+        validityTask = null;
         for (Session s : new ArrayList<>(sessions.values())) {
             for (HumanEntity viewer : new ArrayList<>(s.inventory.getViewers())) viewer.closeInventory();
             save(s);
@@ -111,7 +136,7 @@ public final class EnderChestModule extends Module {
     private int rowsFor(Player player) {
         int rows = config().getInt("rows", 6);
         for (int n = 6; n > rows; n--) {
-            if (player != null && player.hasPermission("survivalcore.enderchest.rows." + n)) {
+            if (player.hasPermission("survivalcore.enderchest.rows." + n)) {
                 rows = n;
                 break;
             }
@@ -130,11 +155,17 @@ public final class EnderChestModule extends Module {
         // Sneaking with something in hand places/uses it instead, like vanilla.
         if (player.isSneaking() && (!player.getInventory().getItemInMainHand().getType().isAir()
                 || !player.getInventory().getItemInOffHand().getType().isAir())) return;
-        if (event.useInteractedBlock() == org.bukkit.event.Event.Result.DENY) return;
+        if (event.useInteractedBlock() == Event.Result.DENY) return;
+        if (player.getGameMode() == GameMode.SPECTATOR) return;
         event.setCancelled(true);
-        if (event.getHand() != org.bukkit.inventory.EquipmentSlot.HAND) return;
-        if (block.getRelative(BlockFace.UP).getType().isOccluding()) return; // vanilla: blocked lid
-        if (open(player, player, block.getLocation())) player.incrementStatistic(Statistic.ENDERCHEST_OPENED);
+        if (event.getHand() != EquipmentSlot.HAND) return;
+        // Vanilla: a solid block (in its current state, e.g. a double slab) on top keeps it shut.
+        BlockState state = block.getState(false);
+        if (state instanceof org.bukkit.block.EnderChest chest && chest.isBlocked()) return;
+        if (open(player, player, block.getLocation())) {
+            player.incrementStatistic(Statistic.ENDERCHEST_OPENED);
+            angerPiglins(player);
+        }
     }
 
     /** Other plugins (e.g. /ec commands) opening the vanilla ender chest get the big one instead. */
@@ -160,19 +191,20 @@ public final class EnderChestModule extends Module {
             sessions.put(owner.getUniqueId(), session);
         }
         if (viewer.openInventory(session.inventory) == null) { // another plugin stopped it
-            if (session.viewers.isEmpty()) sessions.remove(owner.getUniqueId());
+            if (session.viewers.isEmpty()) sessions.remove(owner.getUniqueId(), session);
             return false;
         }
+        // Re-opening the same chest fires a close first, which may have dropped the session.
+        sessions.put(owner.getUniqueId(), session);
         session.viewers.add(viewer.getUniqueId());
         if (chest != null) {
             openLids.merge(chest, 1, Integer::sum);
             viewerChests.put(viewer.getUniqueId(), chest);
             setLid(chest, true);
+            chest.getWorld().sendGameEvent(viewer, GameEvent.CONTAINER_OPEN, chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
         }
         return true;
     }
-
-    private final Map<UUID, Location> viewerChests = new HashMap<>();
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onClose(InventoryCloseEvent event) {
@@ -186,40 +218,44 @@ public final class EnderChestModule extends Module {
                 openLids.remove(chest);
                 setLid(chest, false);
             }
+            if (chest.getWorld() != null) {
+                chest.getWorld().sendGameEvent(event.getPlayer(), GameEvent.CONTAINER_CLOSE,
+                        chest.toVector().add(new Vector(0.5, 0.5, 0.5)));
+            }
         }
         save(session);
-        if (session.viewers.isEmpty()) sessions.remove(session.owner);
+        if (session.viewers.isEmpty()) sessions.remove(session.owner, session);
     }
 
     /** Saves while the owner is still online (an admin might be looking at their chest). */
     @EventHandler(priority = EventPriority.LOWEST)
-    public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+    public void onQuit(PlayerQuitEvent event) {
         Session session = sessions.get(event.getPlayer().getUniqueId());
         if (session == null) return;
         for (HumanEntity viewer : new ArrayList<>(session.inventory.getViewers())) viewer.closeInventory();
         save(session);
-        sessions.remove(session.owner);
+        sessions.remove(session.owner, session);
     }
 
-    /** Save a tick after any change, so a crash can't dupe or lose what was moved. */
-    private final Set<UUID> pendingSaves = new HashSet<>();
-
-    private void saveSoon(Session session) {
-        if (!pendingSaves.add(session.owner)) return;
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
-            pendingSaves.remove(session.owner);
-            if (sessions.get(session.owner) == session) save(session);
-        });
+    /** Like vanilla: the chest closes when it's broken or the player gets carried too far away. */
+    private void checkStillValid() {
+        for (Map.Entry<UUID, Location> e : new ArrayList<>(viewerChests.entrySet())) {
+            Player viewer = Bukkit.getPlayer(e.getKey());
+            Location chest = e.getValue();
+            if (viewer == null) continue;
+            boolean gone = chest.getWorld() == null || !chest.getWorld().isChunkLoaded(chest.getBlockX() >> 4, chest.getBlockZ() >> 4)
+                    || chest.getBlock().getType() != Material.ENDER_CHEST;
+            boolean far = viewer.getWorld() != chest.getWorld()
+                    || viewer.getLocation().distanceSquared(chest.clone().add(0.5, 0.5, 0.5)) > 64;
+            if (gone || far) viewer.closeInventory();
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onSessionClick(org.bukkit.event.inventory.InventoryClickEvent event) {
-        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onSessionDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
-        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
+    public void onChestBroken(BlockBreakEvent event) {
+        if (event.getBlock().getType() == Material.ENDER_CHEST) {
+            plugin.getServer().getScheduler().runTask(plugin, this::checkStillValid);
+        }
     }
 
     private static void setLid(Location at, boolean open) {
@@ -229,155 +265,224 @@ public final class EnderChestModule extends Module {
         else lidded.close();
     }
 
-    // ------------------------------------------------------------------ storage
-
-    private File extraFile(UUID owner) {
-        return new File(folder, owner + ".dat");
+    /** Vanilla: piglins that see you open an ender chest get angry (Paper's piglins-guard-chests). */
+    private void angerPiglins(Player player) {
+        if (player.getGameMode() == GameMode.CREATIVE || !piglinsGuardChests(player)) return;
+        boolean universal = Boolean.TRUE.equals(player.getWorld().getGameRuleValue(GameRule.UNIVERSAL_ANGER));
+        for (Piglin piglin : player.getWorld().getNearbyEntitiesByType(Piglin.class, player.getLocation(), 16)) {
+            if (piglin.getTarget() != null || piglin.isConverting() || !piglin.hasLineOfSight(player)) continue;
+            Player target = universal ? nearestTargetable(piglin, player) : player;
+            piglin.setMemory(MemoryKey.ANGRY_AT, target.getUniqueId());
+            piglin.setTarget(target);
+        }
     }
 
-    /** Builds the big inventory: vanilla ender chest first, then the extra rows. */
-    private Inventory load(Player owner, Session holder) {
-        List<ItemStack> items = new ArrayList<>();
-        ItemStack[] vanilla = owner.getEnderChest().getContents();
-        for (ItemStack i : vanilla) items.add(i);
-        try {
-            File extra = extraFile(owner.getUniqueId());
-            if (extra.isFile()) {
-                for (ItemStack i : ItemStack.deserializeItemsFromBytes(Files.readAllBytes(extra.toPath()))) items.add(i);
+    private static Player nearestTargetable(Piglin piglin, Player fallback) {
+        Player best = fallback;
+        double bestDist = Double.MAX_VALUE;
+        for (Player p : piglin.getWorld().getPlayers()) {
+            if (p.getGameMode() == GameMode.CREATIVE || p.getGameMode() == GameMode.SPECTATOR) continue;
+            double d = p.getLocation().distanceSquared(piglin.getLocation());
+            if (d < bestDist) {
+                bestDist = d;
+                best = p;
             }
-        } catch (IOException | RuntimeException e) {
+        }
+        return best;
+    }
+
+    /** Paper's per-world entities.behavior.piglins-guard-chests (true unless turned off). */
+    private static boolean piglinsGuardChests(Player player) {
+        try {
+            Object level = player.getWorld().getClass().getMethod("getHandle").invoke(player.getWorld());
+            Object config = level.getClass().getMethod("paperConfig").invoke(level);
+            Object entities = config.getClass().getField("entities").get(config);
+            Object behavior = entities.getClass().getField("behavior").get(entities);
+            return behavior.getClass().getField("piglinsGuardChests").getBoolean(behavior);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return true;
+        }
+    }
+
+    // ------------------------------------------------------------------ storage
+
+    /** Builds the big inventory: vanilla ender chest first, then the extra rows, then anything waiting. */
+    private Inventory load(Player owner, Session holder) {
+        PersistentDataContainer pdc = owner.getPersistentDataContainer();
+        List<ItemStack> items = new ArrayList<>(Arrays.asList(owner.getEnderChest().getContents()));
+        List<ItemStack> waiting = new ArrayList<>();
+        try {
+            byte[] extra = pdc.get(extraKey, PersistentDataType.BYTE_ARRAY);
+            if (extra != null) items.addAll(Arrays.asList(ItemStack.deserializeItemsFromBytes(extra)));
+            byte[] pending = pdc.get(pendingKey, PersistentDataType.BYTE_ARRAY);
+            if (pending != null) waiting.addAll(Arrays.asList(ItemStack.deserializeItemsFromBytes(pending)));
+        } catch (RuntimeException e) {
             plugin.getLogger().log(Level.SEVERE, "Could not read the extra ender chest rows of " + owner.getName()
                     + "; not opening it so nothing gets overwritten.", e);
             owner.sendMessage(prefix() + ChatColor.RED + "Your ender chest couldn't be loaded. Tell an admin.");
             return null;
         }
 
-        boolean failedBefore = failed.contains(owner.getUniqueId().toString());
+        boolean failedBefore = owner.getPersistentDataContainer().has(importFailedKey, PersistentDataType.BYTE);
         Map<Integer, ItemStack> fromBec = importBetterEnderChest(owner);
         if (fromBec != null && !failedBefore) {
-            // BetterEnderChest's chest replaces the vanilla one, which it had left stale.
+            // BetterEnderChest's chest replaces the vanilla one, which it had left stale. Anything
+            // already in the extra rows is kept (it waits for room) rather than thrown away.
+            if (items.size() > VANILLA_SIZE) waiting.addAll(items.subList(VANILLA_SIZE, items.size()));
             items.clear();
             int max = fromBec.keySet().stream().mapToInt(Integer::intValue).max().orElse(-1);
             for (int i = 0; i <= max; i++) items.add(fromBec.get(i));
         } else if (fromBec != null) {
             // An earlier import failed and they've been using this chest since: keep it, add the old items.
-            items.addAll(fromBec.values());
+            waiting.addAll(fromBec.values());
         }
 
         int rows = rowsFor(owner);
-        // Never hide items: grow to fit whatever is stored.
-        for (int i = items.size() - 1; i >= 0; i--) {
-            if (items.get(i) != null && !items.get(i).getType().isAir()) {
+        for (int i = items.size() - 1; i >= 0; i--) { // never hide items: grow to fit what's stored
+            if (!isEmpty(items.get(i))) {
                 rows = Math.max(rows, Math.min(6, i / 9 + 1));
                 break;
             }
         }
         Inventory inv = Bukkit.createInventory(holder, rows * 9, config().getString("title", "Ender Chest"));
-        List<ItemStack> overflow = new ArrayList<>();
         for (int i = 0; i < items.size(); i++) {
             ItemStack item = items.get(i);
-            if (item == null || item.getType().isAir()) continue;
+            if (isEmpty(item)) continue;
             if (i < inv.getSize()) inv.setItem(i, item);
-            else overflow.add(item);
+            else waiting.add(item);
         }
-        if (!overflow.isEmpty()) {
-            for (ItemStack rest : inv.addItem(overflow.toArray(new ItemStack[0])).values()) {
-                owner.getWorld().dropItem(owner.getLocation(), rest);
-            }
+        // Anything that doesn't fit waits safely in the player's data until there's room.
+        List<ItemStack> stillWaiting = new ArrayList<>();
+        for (ItemStack w : waiting) {
+            if (isEmpty(w)) continue;
+            stillWaiting.addAll(inv.addItem(w).values());
         }
-        if (fromBec != null) {
-            holder.inventory = inv;
-            save(holder); // write the imported items out straight away
+        if (stillWaiting.isEmpty()) {
+            pdc.remove(pendingKey);
+        } else {
+            pdc.set(pendingKey, PersistentDataType.BYTE_ARRAY, ItemStack.serializeItemsAsBytes(stillWaiting));
+            owner.sendMessage(prefix() + ChatColor.YELLOW + stillWaiting.size()
+                    + " stack(s) are waiting for room in your ender chest. Take something out and reopen it.");
         }
+        holder.inventory = inv;
+        holder.lastVanilla = owner.getEnderChest().getContents().clone();
+        cloneAll(holder.lastVanilla);
+        if (fromBec != null) save(holder); // write the imported items out straight away
         return inv;
     }
 
     private void save(Session session) {
         Inventory inv = session.inventory;
+        Player owner = session.ownerPlayer;
+        // Something else changed the vanilla ender chest while this was open (/item, another plugin):
+        // take that change instead of overwriting it.
+        ItemStack[] vanillaNow = owner.getEnderChest().getContents();
+        for (int i = 0; i < VANILLA_SIZE && i < inv.getSize() && i < vanillaNow.length; i++) {
+            if (!same(vanillaNow[i], session.lastVanilla[i])) inv.setItem(i, vanillaNow[i]);
+        }
         ItemStack[] all = inv.getContents();
         ItemStack[] vanillaPart = new ItemStack[VANILLA_SIZE];
         System.arraycopy(all, 0, vanillaPart, 0, Math.min(VANILLA_SIZE, all.length));
-        session.ownerPlayer.getEnderChest().setContents(vanillaPart);
+        owner.getEnderChest().setContents(vanillaPart);
+        session.lastVanilla = vanillaPart.clone();
+        cloneAll(session.lastVanilla);
+
         ItemStack[] extra = new ItemStack[Math.max(0, all.length - VANILLA_SIZE)];
         if (extra.length > 0) System.arraycopy(all, VANILLA_SIZE, extra, 0, extra.length);
-        File file = extraFile(session.owner);
-        try {
-            boolean empty = true;
-            for (ItemStack i : extra) if (i != null && !i.getType().isAir()) empty = false;
-            if (empty) {
-                Files.deleteIfExists(file.toPath());
-            } else {
-                File tmp = new File(folder, session.owner + ".dat.tmp");
-                Files.write(tmp.toPath(), ItemStack.serializeItemsAsBytes(extra));
-                Files.move(tmp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            }
-        } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Could not save the extra ender chest rows of " + session.owner, e);
-        }
+        boolean empty = true;
+        for (ItemStack i : extra) if (!isEmpty(i)) empty = false;
+        PersistentDataContainer pdc = owner.getPersistentDataContainer();
+        if (empty) pdc.remove(extraKey);
+        else pdc.set(extraKey, PersistentDataType.BYTE_ARRAY, ItemStack.serializeItemsAsBytes(extra));
+    }
+
+    /** Save a tick after any change, so the player's data always matches what's in the chest. */
+    private void saveSoon(Session session) {
+        if (!pendingSaves.add(session.owner)) return;
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            pendingSaves.remove(session.owner);
+            if (sessions.get(session.owner) == session) save(session);
+        });
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSessionClick(InventoryClickEvent event) {
+        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSessionDrag(InventoryDragEvent event) {
+        if (Holders.of(event.getView().getTopInventory()) instanceof Session session) saveSoon(session);
+    }
+
+    private static boolean isEmpty(ItemStack item) {
+        return item == null || item.getType().isAir();
+    }
+
+    private static boolean same(ItemStack a, ItemStack b) {
+        if (isEmpty(a) && isEmpty(b)) return true;
+        return Objects.equals(a, b);
+    }
+
+    private static void cloneAll(ItemStack[] items) {
+        for (int i = 0; i < items.length; i++) if (items[i] != null) items[i] = items[i].clone();
     }
 
     // ------------------------------------------------------------------ BetterEnderChest import
 
     /**
      * If this player has a BetterEnderChest chest that hasn't been imported yet, returns its items
-     * by slot (that chest replaces the vanilla one, which BetterEnderChest left stale). Returns
-     * null when there's nothing to import.
+     * by slot. Items that can't be read are skipped (and logged), never the whole chest.
      */
     private Map<Integer, ItemStack> importBetterEnderChest(Player owner) {
-        String id = owner.getUniqueId().toString();
-        if (imported.contains(id)) return null;
+        PersistentDataContainer pdc = owner.getPersistentDataContainer();
+        if (pdc.has(importedKey, PersistentDataType.BYTE) || importTriedThisRun.contains(owner.getUniqueId())) return null;
         File data = new File(plugin.getDataFolder().getParentFile(), "BetterEnderChest/chestData");
-        File file = new File(data, id + ".dat");
+        File file = new File(data, owner.getUniqueId() + ".dat");
         if (!file.isFile()) file = new File(data, owner.getName().toLowerCase(Locale.ROOT) + ".dat");
         if (!file.isFile()) {
-            markImported(id); // nothing to bring over, never look again
+            pdc.set(importedKey, PersistentDataType.BYTE, (byte) 1); // nothing to bring over, never look again
             return null;
         }
         Map<Integer, ItemStack> items = new LinkedHashMap<>();
+        int skipped = 0;
         try (InputStream in = new FileInputStream(file)) {
-            Nbt.Tag root = Nbt.readCompressed(in);
-            Map<String, Nbt.Tag> r = root.compound();
-            int dataVersion = r.containsKey("DataVersion") ? r.get("DataVersion").asInt() : 0;
-            Nbt.Tag list = r.get("Inventory");
+            Map<String, Nbt.Tag> root = Nbt.readCompressed(in).compound();
+            int dataVersion = root.containsKey("DataVersion") ? root.get("DataVersion").asInt() : 0;
+            Nbt.Tag list = root.get("Inventory");
             if (list != null) {
                 for (Nbt.Tag entry : Nbt.items(list)) {
-                    Map<String, Nbt.Tag> item = new LinkedHashMap<>(entry.compound());
-                    Nbt.Tag slot = item.remove("Slot");
-                    if (slot == null) continue;
-                    if (dataVersion > 0) item.put("DataVersion", new Nbt.Tag(Nbt.INT, dataVersion));
-                    ItemStack stack = ItemStack.deserializeBytes(Nbt.writeCompressed(item));
-                    int index = slot.asInt() & 0xFF;
-                    if (!stack.getType().isAir()) items.put(index, stack);
+                    try {
+                        Map<String, Nbt.Tag> item = new LinkedHashMap<>(entry.compound());
+                        Nbt.Tag slot = item.remove("Slot");
+                        if (slot == null) continue;
+                        if (dataVersion > 0) item.put("DataVersion", new Nbt.Tag(Nbt.INT, dataVersion));
+                        ItemStack stack = ItemStack.deserializeBytes(Nbt.writeCompressed(item));
+                        if (stack.getType().isAir()) continue;
+                        int index = slot.asInt() & 0xFF;
+                        // Two items in one slot (shouldn't happen): keep both; the second waits for room.
+                        while (items.containsKey(index)) index += 100;
+                        items.put(index, stack);
+                    } catch (IOException | RuntimeException bad) {
+                        skipped++;
+                        plugin.getLogger().log(Level.WARNING, "Skipped an unreadable item in " + owner.getName()
+                                + "'s BetterEnderChest", bad);
+                    }
                 }
             }
         } catch (IOException | RuntimeException e) {
+            importTriedThisRun.add(owner.getUniqueId());
+            pdc.set(importFailedKey, PersistentDataType.BYTE, (byte) 1);
             plugin.getLogger().log(Level.SEVERE, "Could not import " + owner.getName() + "'s BetterEnderChest ("
                     + file + "). Their vanilla ender chest is shown instead; the old file is untouched.", e);
             owner.sendMessage(prefix() + ChatColor.RED + "Your old ender chest couldn't be moved over. Tell an admin.");
-            failed.add(id);
-            writeImported();
             return null;
         }
-        markImported(id);
-        plugin.getLogger().info("Imported " + items.size() + " item stack(s) from " + owner.getName() + "'s BetterEnderChest.");
+        pdc.set(importedKey, PersistentDataType.BYTE, (byte) 1);
+        pdc.remove(importFailedKey);
+        plugin.getLogger().info("Imported " + items.size() + " item stack(s) from " + owner.getName() + "'s BetterEnderChest"
+                + (skipped > 0 ? " (" + skipped + " unreadable item(s) skipped, see above)." : "."));
         return items;
-    }
-
-    private void markImported(String id) {
-        imported.add(id);
-        writeImported();
-    }
-
-    private void writeImported() {
-        YamlConfiguration yaml = new YamlConfiguration();
-        yaml.set("players", new ArrayList<>(imported));
-        yaml.set("failed", new ArrayList<>(failed));
-        try {
-            yaml.save(importedFile);
-        } catch (IOException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not save " + importedFile.getName(), e);
-        }
     }
 
     // ------------------------------------------------------------------ /enderchest

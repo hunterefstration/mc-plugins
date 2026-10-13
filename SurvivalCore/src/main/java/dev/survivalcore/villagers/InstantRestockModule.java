@@ -27,7 +27,11 @@ import java.util.List;
  */
 public final class InstantRestockModule extends Module {
 
-    private static final int UNLIMITED = Integer.MAX_VALUE;
+    /**
+     * Big enough to never run out in one sitting, small enough that vanilla's price-demand maths
+     * (demand - maxUses, run if the villager restocks while you trade) can't overflow.
+     */
+    private static final int UNLIMITED = 1_000_000;
     private final NamespacedKey originalKey;
 
     public InstantRestockModule(SurvivalCore plugin) {
@@ -39,7 +43,8 @@ public final class InstantRestockModule extends Module {
         return !(merchant instanceof WanderingTrader) || config().getBoolean("wandering-traders", true);
     }
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    /** MONITOR: only once the screen is really opening (if it's cancelled, nothing is changed). */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onOpen(InventoryOpenEvent event) {
         if (!(event.getInventory() instanceof MerchantInventory inv)) return;
         if (!(inv.getMerchant() instanceof AbstractVillager villager) || !applies(villager)) return;
@@ -80,7 +85,7 @@ public final class InstantRestockModule extends Module {
         List<MerchantRecipe> recipes = new ArrayList<>(villager.getRecipes());
         for (int i = 0; i < recipes.size() && i < originals.length; i++) {
             MerchantRecipe recipe = recipes.get(i);
-            if (recipe.getMaxUses() == UNLIMITED) recipe.setMaxUses(originals[i]);
+            if (recipe.getMaxUses() == UNLIMITED || recipe.getMaxUses() == Integer.MAX_VALUE) recipe.setMaxUses(originals[i]);
             recipe.setUses(0);
         }
         villager.setRecipes(recipes);

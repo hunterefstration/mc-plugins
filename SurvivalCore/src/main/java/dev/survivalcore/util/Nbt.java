@@ -57,6 +57,13 @@ public final class Nbt {
         return bytes.toByteArray();
     }
 
+    /** A corrupt length could otherwise ask for gigabytes of memory. */
+    private static int length(DataInput in) throws IOException {
+        int n = in.readInt();
+        if (n < 0 || n > 16_777_216) throw new IOException("Corrupt NBT (length " + n + ")");
+        return n;
+    }
+
     private static Object readPayload(DataInput in, byte type, int depth) throws IOException {
         if (depth > 512) throw new IOException("NBT nested too deep");
         switch (type) {
@@ -67,14 +74,14 @@ public final class Nbt {
             case FLOAT: return in.readFloat();
             case DOUBLE: return in.readDouble();
             case BYTE_ARRAY: {
-                byte[] b = new byte[in.readInt()];
+                byte[] b = new byte[length(in)];
                 in.readFully(b);
                 return b;
             }
             case STRING: return in.readUTF();
             case LIST: {
                 byte elementType = in.readByte();
-                int length = in.readInt();
+                int length = length(in);
                 List<Tag> list = new ArrayList<>(Math.max(0, length));
                 for (int i = 0; i < length; i++) list.add(new Tag(elementType, readPayload(in, elementType, depth + 1)));
                 return new ListValue(elementType, list);
@@ -90,12 +97,12 @@ public final class Nbt {
                 return map;
             }
             case INT_ARRAY: {
-                int[] a = new int[in.readInt()];
+                int[] a = new int[length(in)];
                 for (int i = 0; i < a.length; i++) a[i] = in.readInt();
                 return a;
             }
             case LONG_ARRAY: {
-                long[] a = new long[in.readInt()];
+                long[] a = new long[length(in)];
                 for (int i = 0; i < a.length; i++) a[i] = in.readLong();
                 return a;
             }

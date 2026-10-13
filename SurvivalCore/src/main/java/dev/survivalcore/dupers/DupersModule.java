@@ -15,10 +15,13 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 
@@ -30,8 +33,9 @@ import java.util.Set;
  *   Paper's own {@code skip-tripwire-hook-placement-validation} switch on, so the real vanilla
  *   code runs again.</li>
  *   <li><b>String dupers</b>: Mojang removed these in 1.21.2, so there is no switch for them. This
- *   module re-creates the exact 1.21.1 behaviour: when a <i>disarmed</i> string in an attached
- *   hook-to-hook line is destroyed (by flowing water, an explosion, a player...), the hooks
+ *   module re-creates the exact 1.21.1 behaviour: when a string is destroyed (by flowing water,
+ *   an explosion, a player, the Wither...) and that makes its hook-to-hook line change state (a
+ *   disarmed string, or a gap left by another string), the hooks
  *   detach and put the string straight back, so the string drops as an item <i>and</i> stays.
  *   Old-style automatic string farms work unchanged.</li>
  * </ul>
@@ -48,7 +52,7 @@ public final class DupersModule extends Module {
     /** Strings to put back at the end of this tick (vanilla did it during the same block update). */
     private final List<Pending> pending = new ArrayList<>();
 
-    private record Pending(Block block, BlockData state) {}
+    private record Pending(Block block, BlockData state, boolean explosion) {}
 
     public DupersModule(SurvivalCore plugin) {
         super(plugin, "dupers", "Dupers");
@@ -82,94 +86,172 @@ public final class DupersModule extends Module {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFlow(BlockFromToEvent event) {
-        removed(event.getToBlock(), false, new HashSet<>());
+        removed(event.getToBlock(), false, new Removal(false));
     }
 
     // Pistons and buckets aren't listed: in 1.21.1 the moving block / placed water immediately
     // overwrote the string the hooks put back, so they never duped. The tick-end check below also
     // refuses to overwrite anything but air or flowing liquid, for the same reason.
+    // (/setblock, /fill and other plugins breaking blocks can't be seen by plugins at all.)
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBreak(BlockBreakEvent event) {
         // Vanilla marks string as disarmed when it's broken with shears, just before removing it.
         boolean shears = event.getPlayer().getInventory().getItemInMainHand().getType() == Material.SHEARS;
-        removed(event.getBlock(), shears && shearDupe, new HashSet<>());
+        removed(event.getBlock(), shears && shearDupe, new Removal(false));
+    }
+
+    /** The Wither (and other mobs) breaking blocks. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityChangeBlock(EntityChangeBlockEvent event) {
+        if (event.getBlock().getType() == Material.TRIPWIRE && event.getTo().isAir()) {
+            removed(event.getBlock(), false, new Removal(false));
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        Set<Block> detached = new HashSet<>(); // vanilla removes these one by one: the first detaches the line
-        for (Block b : event.blockList()) removed(b, false, detached);
+        explosion(event.blockList());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
-        Set<Block> detached = new HashSet<>();
-        for (Block b : event.blockList()) removed(b, false, detached);
+        explosion(event.blockList());
+    }
+
+    /**
+     * Vanilla removes exploded blocks one at a time, in this order. A hook (or the block a hook
+     * hangs on) going first detaches its line before later strings go; strings that already went
+     * are gaps in the line for the ones after them.
+     */
+    void explosion(List<Block> blocks) {
+        Removal removal = new Removal(true);
+        for (Block b : blocks) {
+            if (b.getType() == Material.TRIPWIRE) {
+                removed(b, false, removal);
+            } else {
+                if (b.getType() == Material.TRIPWIRE_HOOK) detachLine(b, removal);
+                for (BlockFace f : HORIZONTAL) {
+                    Block n = b.getRelative(f);
+                    // A hook faces away from the block it hangs on.
+                    if (n.getType() == Material.TRIPWIRE_HOOK && n.getBlockData() instanceof TripwireHook h
+                            && h.getFacing() == f) {
+                        detachLine(n, removal);
+                    }
+                }
+            }
+            removal.gone.add(b);
+        }
     }
 
     // ------------------------------------------------------------------ the 1.21.1 logic
 
+    private static final BlockFace[] HORIZONTAL = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST};
+
+    /** What has already happened earlier in one event (an explosion removes many blocks in a row). */
+    static final class Removal {
+        final boolean explosion;
+        /** Hooks whose attached state changed earlier in this event. */
+        final Map<Block, Boolean> attached = new HashMap<>();
+        /** Blocks already removed earlier in this event. */
+        final Set<Block> gone = new HashSet<>();
+
+        Removal(boolean explosion) {
+            this.explosion = explosion;
+        }
+    }
+
+    private void detachLine(Block hookBlock, Removal removal) {
+        if (!(hookBlock.getBlockData() instanceof TripwireHook hook)) return;
+        removal.attached.put(hookBlock, false);
+        Block other = farHook(hookBlock, hook.getFacing());
+        if (other != null) removal.attached.put(other, false);
+    }
+
+    /** The hook at the other end of the line, facing back, or null. */
+    private static Block farHook(Block hookBlock, BlockFace facing) {
+        for (int j = 1; j < MAX_LINE; j++) {
+            Block b = hookBlock.getRelative(facing, j);
+            if (b.getType() == Material.TRIPWIRE_HOOK) {
+                return b.getBlockData() instanceof TripwireHook o && o.getFacing() == facing.getOppositeFace() ? b : null;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isString(Block b, Removal removal) {
+        return b.getType() == Material.TRIPWIRE && !removal.gone.contains(b);
+    }
+
     /**
-     * Called just before a block is destroyed. {@code detached} holds hooks that already detached
-     * earlier in the same event (e.g. an explosion breaking two strings of one line); between
-     * separate events the hooks' real state in the world already says so, as in vanilla. Mirrors TripWireBlock#updateSource followed by
-     * TripWireHookBlock#calculateState from 1.21.1, which re-placed the string when a disarmed
-     * one was removed from an attached line.
+     * Called just before a string is destroyed. Mirrors 1.21.1's TripWireBlock#updateSource, which
+     * runs TripWireHookBlock#calculateState for the hook south and the hook west of the string.
      */
-    void removed(Block wire, boolean disarmedByShears, Set<Block> detached) {
+    void removed(Block wire, boolean disarmedByShears, Removal removal) {
         if (!stringDupe || wire.getType() != Material.TRIPWIRE) return;
-        for (Pending p : pending) if (p.block().equals(wire)) return; // already queued this tick
         if (!(wire.getBlockData() instanceof Tripwire current)) return;
         Tripwire state = (Tripwire) current.clone();
         if (disarmedByShears) state.setDisarmed(true);
-        if (!state.isDisarmed()) return; // an armed string just breaks, like vanilla
-        // The hooks were handed the string's state with powered=true (it's being "triggered" by its removal).
+        // The hooks are handed the string's state with powered=true (it's "triggered" by its removal).
         state.setPowered(true);
 
+        Boolean putBackAttached = null;
         for (BlockFace dir : new BlockFace[]{BlockFace.SOUTH, BlockFace.WEST}) {
             for (int i = 1; i < MAX_LINE; i++) {
                 Block b = wire.getRelative(dir, i);
                 if (b.getType() == Material.TRIPWIRE_HOOK) {
-                    if (b.getBlockData() instanceof TripwireHook hook && hook.getFacing() == dir.getOppositeFace()
-                            && wouldReplace(b, hook, i, detached)) {
-                        state.setAttached(false);
-                        pending.add(new Pending(wire, state));
-                        return;
+                    if (b.getBlockData() instanceof TripwireHook hook && hook.getFacing() == dir.getOppositeFace()) {
+                        Boolean result = calculateState(b, hook, i, state, removal);
+                        if (result != null && putBackAttached == null) putBackAttached = result;
                     }
                     break;
                 }
-                if (b.getType() != Material.TRIPWIRE) break;
+                if (!isString(b, removal)) break;
             }
         }
+        if (putBackAttached == null) return;
+        for (Pending p : pending) if (p.block().equals(wire)) return; // already queued this tick
+        state.setAttached(putBackAttached);
+        pending.add(new Pending(wire, state, removal.explosion));
     }
 
     /**
-     * TripWireHookBlock#calculateState with searchRange = {@code removedAt}: the hook was attached,
-     * and is now detaching (a disarmed string never counts as attached), so it re-sets every string
-     * between itself and the hook on the other end.
+     * TripWireHookBlock#calculateState(level, hookPos, hookState, false, true, removedAt, state).
+     * Returns the "attached" value the removed string is put back with, or null if this hook
+     * doesn't put it back.
      */
-    private boolean wouldReplace(Block hookBlock, TripwireHook hook, int removedAt, Set<Block> detached) {
-        if (!hook.isAttached() || detached.contains(hookBlock)) return false;
+    private Boolean calculateState(Block hookBlock, TripwireHook hook, int removedAt, Tripwire state, Removal removal) {
+        boolean wasAttached = removal.attached.getOrDefault(hookBlock, hook.isAttached());
         BlockFace facing = hook.getFacing();
+        boolean attached = true; // flag2: stays attached only if the whole line is intact and armed
+        int far = 0;
         for (int j = 1; j < MAX_LINE; j++) {
             Block b = hookBlock.getRelative(facing, j);
             if (b.getType() == Material.TRIPWIRE_HOOK) {
-                if (!(b.getBlockData() instanceof TripwireHook other) || other.getFacing() != facing.getOppositeFace()) {
-                    return false;
-                }
-                if (j <= removedAt) return false;
-                detached.add(hookBlock);
-                detached.add(b);
-                return true;
+                if (b.getBlockData() instanceof TripwireHook o && o.getFacing() == facing.getOppositeFace()) far = j;
+                break;
+            }
+            if (j == removedAt) {
+                if (state.isDisarmed()) attached = false;
+            } else if (!isString(b, removal)) {
+                attached = false; // a gap in the line
             }
         }
-        return false;
+        attached &= far > 1;
+        if (wasAttached == attached) return null; // nothing changes, nothing is re-set
+        // The line changes state: both hooks update, and every string between them is re-set,
+        // including the one that was just removed (the bug Mojang fixed in 1.21.2).
+        removal.attached.put(hookBlock, attached);
+        if (far > 0) removal.attached.put(hookBlock.getRelative(facing, far), attached);
+        return far > removedAt ? attached : null;
     }
 
-    private static boolean canReplace(Block b) {
+    private static boolean canReplace(Block b, boolean explosion) {
         Material type = b.getType();
         if (type.isAir()) return true;
+        // An explosion can start a fire in the empty spot later in the same tick; in 1.21.1 the
+        // string was already back by then.
+        if (explosion && (type == Material.FIRE || type == Material.SOUL_FIRE)) return true;
         if ((type == Material.WATER || type == Material.LAVA)
                 && b.getBlockData() instanceof org.bukkit.block.data.Levelled fluid) {
             return fluid.getLevel() != 0; // flowing, not a source
@@ -199,7 +281,7 @@ public final class DupersModule extends Module {
             if (!b.getWorld().isChunkLoaded(b.getX() >> 4, b.getZ() >> 4)) continue;
             // Only where the string is really gone and nothing else took its place: air (broken,
             // exploded) or flowing water/lava. Never over a piston's moving block or a water source.
-            if (!canReplace(b)) continue;
+            if (!canReplace(b, p.explosion())) continue;
             b.setBlockData(p.state(), true);
         }
     }
