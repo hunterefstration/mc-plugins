@@ -76,6 +76,9 @@ Sneak and right-click a villager with an empty hand to pick it up. Right-click a
   used as a normal spawn egg or in a dispenser (droppers still move it).
 - You need a free inventory slot to pick one up. If the item ends up on the ground it can't burn or despawn, and
   if it falls into the void it comes back at the world spawn.
+- Villagers already picked up with ClickVillagers (the villager heads) still work: place the head like before and
+  the villager comes out, with all its data. Each old head works once, so copies of one are refused. Heads from
+  an older Minecraft version are upgraded by the server, like old chunks are.
 
 ### Instant restock
 Villagers never run out. Trades never lock, even if you use one over and over, and prices don't go up from heavy

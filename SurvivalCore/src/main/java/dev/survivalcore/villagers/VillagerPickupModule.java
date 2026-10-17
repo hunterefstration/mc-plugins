@@ -25,6 +25,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
@@ -98,6 +99,17 @@ public final class VillagerPickupModule extends Module {
     private final Set<EntityType> allowed = new HashSet<>();
     private boolean requireSneak;
     private boolean allowBabies;
+    /**
+     * Villagers picked up with the old ClickVillagers plugin are player heads holding the villager
+     * as text. They're placed the same way they used to be (like placing the head); each one only
+     * once, so copies of an old item can't make more villagers.
+     */
+    private static final NamespacedKey CV_VILLAGER = new NamespacedKey("clickvillagers", "villager");
+    private static final NamespacedKey CV_TYPE = new NamespacedKey("clickvillagers", "type");
+    private static final NamespacedKey CV_NBT = new NamespacedKey("clickvillagers", "nbt");
+    private static final NamespacedKey CV_DATA_VERSION = new NamespacedKey("clickvillagers", "data_version");
+    /** Fingerprints of old ClickVillagers items already placed. */
+    private final Set<String> legacyUsed = new HashSet<>();
 
     public VillagerPickupModule(SurvivalCore plugin) {
         super(plugin, "villager-pickup", "VillagerPickup");
@@ -123,7 +135,9 @@ public final class VillagerPickupModule extends Module {
         placed.clear();
         pickedUp.clear();
         saveScheduled.clear();
+        legacyUsed.clear();
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(ticketFile);
+        legacyUsed.addAll(yaml.getStringList("clickvillagers-used"));
         var pickedSection = yaml.getConfigurationSection("picked");
         if (pickedSection != null) {
             for (String key : pickedSection.getKeys(false)) {
@@ -179,6 +193,7 @@ public final class VillagerPickupModule extends Module {
             yaml.set(path + ".z", p.z());
             yaml.set(path + ".data", p.data());
         });
+        if (!legacyUsed.isEmpty()) yaml.set("clickvillagers-used", new ArrayList<>(legacyUsed));
         try {
             yaml.save(ticketFile);
         } catch (IOException e) {
@@ -326,6 +341,18 @@ public final class VillagerPickupModule extends Module {
                 && item.getItemMeta().getPersistentDataContainer().has(dataKey, PersistentDataType.BYTE_ARRAY);
     }
 
+    /** A villager picked up with the old ClickVillagers plugin. */
+    public static boolean isClickVillagersItem(ItemStack item) {
+        return item != null && item.getType() == Material.PLAYER_HEAD && item.hasItemMeta()
+                && item.getItemMeta().getPersistentDataContainer().has(CV_VILLAGER, PersistentDataType.BYTE)
+                && item.getItemMeta().getPersistentDataContainer().has(CV_NBT, PersistentDataType.STRING);
+    }
+
+    /** Either kind of villager item (ours, or an old ClickVillagers one). */
+    private boolean holdsVillager(ItemStack item) {
+        return isPickedUp(item) || isClickVillagersItem(item);
+    }
+
     // ------------------------------------------------------------------ placing
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -417,7 +444,133 @@ public final class VillagerPickupModule extends Module {
     /** Dispensers would spawn a brand-new villager from it (a free villager); droppers just move it. */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onDispense(BlockDispenseEvent event) {
-        if (isPickedUp(event.getItem()) && event.getBlock().getType() == Material.DISPENSER) event.setCancelled(true);
+        if (holdsVillager(event.getItem()) && event.getBlock().getType() == Material.DISPENSER) event.setCancelled(true);
+    }
+
+    // ------------------------------------------------------------------ old ClickVillagers items
+
+    /**
+     * Placing an old ClickVillagers head puts its villager there, as ClickVillagers did, instead of
+     * placing a plain head (which would lose the villager). HIGH: claim plugins have had their say.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPlaceClickVillager(BlockPlaceEvent event) {
+        ItemStack item = event.getItemInHand();
+        if (!isClickVillagersItem(item)) return;
+        event.setCancelled(true);
+        Player player = event.getPlayer();
+        if (player.getGameMode() == GameMode.SPECTATOR || player.getGameMode() == GameMode.ADVENTURE) return;
+        Block target = event.getBlockPlaced();
+        if (!target.getRelative(0, 1, 0).isPassable()) {
+            player.sendMessage(prefix() + ChatColor.RED + "There isn't enough room there.");
+            return;
+        }
+        PersistentDataContainer pdc = item.getItemMeta().getPersistentDataContainer();
+        String nbt = pdc.get(CV_NBT, PersistentDataType.STRING);
+        EntityType type = "ZOMBIE".equals(pdc.get(CV_TYPE, PersistentDataType.STRING))
+                ? EntityType.ZOMBIE_VILLAGER : EntityType.VILLAGER;
+        String fingerprint = fingerprint(nbt);
+        if (legacyUsed.contains(fingerprint)) {
+            player.sendMessage(prefix() + ChatColor.RED + "This villager item isn't valid (it's a copy), so it was removed.");
+            takeOne(player, event.getHand());
+            return;
+        }
+        Location at = target.getLocation().add(0.5, 0, 0.5);
+        at.setYaw(player.getLocation().getYaw() + 180);
+
+        Entity entity;
+        try {
+            entity = readClickVillager(nbt, type, pdc.get(CV_DATA_VERSION, PersistentDataType.INTEGER), target.getWorld());
+            if (entity.getType() != type) {
+                player.sendMessage(prefix() + ChatColor.RED + "This villager item isn't valid.");
+                return;
+            }
+            if (!entity.spawnAt(at, CreatureSpawnEvent.SpawnReason.SPAWNER_EGG)) {
+                player.sendMessage(prefix() + ChatColor.RED + "Something stopped it from being placed here.");
+                return;
+            }
+        } catch (Throwable t) {
+            plugin.getLogger().log(Level.WARNING, "Could not place an old ClickVillagers villager", t);
+            player.sendMessage(prefix() + ChatColor.RED + "Couldn't place it.");
+            return;
+        }
+
+        legacyUsed.add(fingerprint);
+        takeOne(player, event.getHand());
+        // Same crash safety as our own items: if the server stops before the world is saved, it's put back.
+        try {
+            byte[] data = Bukkit.getUnsafe().serializeEntity(entity);
+            placed.put(UUID.randomUUID(), new Placed(entity.getUniqueId(), target.getWorld().getUID(), at.getBlockX(),
+                    at.getBlockY(), at.getBlockZ(), java.util.Base64.getEncoder().encodeToString(data), Bukkit.getCurrentTick()));
+        } catch (Throwable t) {
+            plugin.getLogger().log(Level.WARNING, "Could not back up a placed villager", t);
+        }
+        saveTickets();
+        player.saveData();
+        saveWorldSoon(target.getWorld(), PLACE_SAVE_DELAY);
+        player.playSound(at, Sound.ENTITY_VILLAGER_AMBIENT, 0.8f, 1f);
+    }
+
+    /** Uses up one item from that hand (always, even in creative, so villagers can't be copied). */
+    private static void takeOne(Player player, EquipmentSlot hand) {
+        EquipmentSlot slot = hand == EquipmentSlot.OFF_HAND ? EquipmentSlot.OFF_HAND : EquipmentSlot.HAND;
+        ItemStack held = player.getInventory().getItem(slot);
+        if (held.getAmount() > 1) {
+            held.setAmount(held.getAmount() - 1);
+            player.getInventory().setItem(slot, held);
+        } else {
+            player.getInventory().setItem(slot, null);
+        }
+    }
+
+    static String fingerprint(String text) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(hash);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Makes the villager (not spawned yet) from a ClickVillagers item. Items from an older
+     * Minecraft version are upgraded by the server's own data fixer, like a chunk from that version
+     * would be; current ones are read exactly as ClickVillagers read them.
+     */
+    private static Entity readClickVillager(String nbt, EntityType type, Integer dataVersion, org.bukkit.World world)
+            throws ReflectiveOperationException, IOException {
+        String text = withId(nbt, type);
+        if (dataVersion != null && dataVersion < Bukkit.getUnsafe().getDataVersion()) {
+            // Text -> the server's NBT -> bytes with its version, which Paper upgrades when reading.
+            Object tag = Class.forName("net.minecraft.nbt.TagParser").getMethod("parseCompoundFully", String.class)
+                    .invoke(null, text);
+            Class<?> compound = Class.forName("net.minecraft.nbt.CompoundTag");
+            compound.getMethod("putInt", String.class, int.class).invoke(tag, "DataVersion", dataVersion);
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            Class.forName("net.minecraft.nbt.NbtIo").getMethod("writeCompressed", compound, java.io.OutputStream.class)
+                    .invoke(null, tag, out);
+            return Bukkit.getUnsafe().deserializeEntity(out.toByteArray(), world, false);
+        }
+        return Bukkit.getEntityFactory().createEntitySnapshot(fixLevels(text)).createEntity(world);
+    }
+
+    /** ClickVillagers' own fix for enchantments saved by older versions ("levels:{...}" -> "..."). */
+    static String fixLevels(String nbt) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("levels:\\{(.*?)}").matcher(nbt);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(m.group(1)));
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** Adds the entity's id if the saved text doesn't have one (as ClickVillagers did). */
+    static String withId(String nbt, EntityType type) {
+        String id = "id:\"" + type.getKey() + "\"";
+        if (nbt.contains(id)) return nbt;
+        String body = nbt.trim();
+        body = body.substring(0, body.length() - 1).trim();
+        return body + (body.endsWith("{") ? "" : ",") + id + "}";
     }
 
     // ------------------------------------------------------------------ never lose one
@@ -425,7 +578,7 @@ public final class VillagerPickupModule extends Module {
     /** If the item is ever on the ground it can't burn, explode or despawn. */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onItemSpawn(ItemSpawnEvent event) {
-        if (!isPickedUp(event.getEntity().getItemStack())) return;
+        if (!holdsVillager(event.getEntity().getItemStack())) return;
         event.getEntity().setUnlimitedLifetime(true);
         event.getEntity().setInvulnerable(true);
     }
@@ -434,7 +587,7 @@ public final class VillagerPickupModule extends Module {
     @EventHandler
     public void onItemRemoved(EntityRemoveEvent event) {
         if (event.getCause() != EntityRemoveEvent.Cause.OUT_OF_WORLD) return;
-        if (!(event.getEntity() instanceof Item item) || !isPickedUp(item.getItemStack())) return;
+        if (!(event.getEntity() instanceof Item item) || !holdsVillager(item.getItemStack())) return;
         ItemStack stack = item.getItemStack();
         Location spawn = item.getWorld().getSpawnLocation();
         plugin.getServer().getScheduler().runTask(plugin, () -> {
