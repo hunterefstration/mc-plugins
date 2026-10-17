@@ -33,11 +33,6 @@ commands:
     aliases: [ec, echest]
     permission: survivalcore.enderchest.command
     usage: /<command> [player]
-  luckboost:
-    description: Admin tool.
-    aliases: [lb]
-    permission: survivalcore.luckboost
-    usage: /<command> [list|<player> [level|off]]
 permissions:
   survivalcore.admin:
     description: Reload SurvivalCore and see which features are on.
@@ -62,7 +57,4 @@ permissions:
     default: op
   survivalcore.enderchest.others:
     description: Open other players' ender chests with /enderchest <player>.
-    default: op
-  survivalcore.luckboost:
-    description: Admin tool.
     default: op

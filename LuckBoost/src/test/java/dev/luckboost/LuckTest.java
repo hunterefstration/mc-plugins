@@ -1,6 +1,5 @@
-package dev.survivalcore.luck;
+package dev.luckboost;
 
-import dev.survivalcore.SurvivalCore;
 import org.bukkit.Material;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.enchantments.Enchantment;
@@ -19,14 +18,12 @@ import static org.junit.jupiter.api.Assertions.*;
 class LuckTest {
 
     private ServerMock server;
-    private SurvivalCore plugin;
-    private LuckModule module;
+    private LuckBoost module;
 
     @BeforeEach
     void setUp() {
         server = MockBukkit.mock();
-        plugin = MockBukkit.load(SurvivalCore.class);
-        module = (LuckModule) plugin.module("luck-boost");
+        module = MockBukkit.load(LuckBoost.class);
     }
 
     @AfterEach
@@ -67,25 +64,34 @@ class LuckTest {
     }
 
     @Test
-    void notListedAndPlayersCantUseIt() {
-        PlayerMock op = server.addPlayer("Admin");
-        op.setOp(true);
-        op.performCommand("sc");
-        String line;
-        while ((line = op.nextMessage()) != null) assertFalse(line.contains("Luck"), line);
-
+    void playersCantUseIt() {
         PlayerMock normal = server.addPlayer("Normal");
         normal.performCommand("luckboost Normal 50");
         assertEquals(0, module.level(normal));
     }
 
     @Test
-    void levelSurvivesReload() {
+    void levelSurvivesRestart() {
         PlayerMock op = server.addPlayer("Admin");
         op.setOp(true);
         PlayerMock target = server.addPlayer("Lucky");
         op.performCommand("luckboost Lucky 3");
-        plugin.reloadAll();
-        assertEquals(3, ((LuckModule) plugin.module("luck-boost")).level(target));
+        server.getPluginManager().disablePlugin(module);
+        server.getPluginManager().enablePlugin(module);
+        assertEquals(3, module.level(target));
+    }
+
+    @Test
+    void carriesLevelsOverFromSurvivalCore() throws Exception {
+        PlayerMock target = server.addPlayer("Lucky");
+        server.getPluginManager().disablePlugin(module);
+        java.io.File own = new java.io.File(module.getDataFolder(), "luck.yml");
+        own.delete();
+        java.io.File old = new java.io.File(module.getDataFolder().getParentFile(), "SurvivalCore/luck.yml");
+        old.getParentFile().mkdirs();
+        java.nio.file.Files.writeString(old.toPath(), "players:\n  " + target.getUniqueId() + ": 7\n");
+        server.getPluginManager().enablePlugin(module);
+        assertEquals(7, module.level(target));
+        assertTrue(own.isFile());
     }
 }

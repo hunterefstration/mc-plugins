@@ -1,4 +1,4 @@
-package dev.survivalcore.luck;
+package dev.luckboost;
 
 import org.bukkit.Material;
 import org.bukkit.enchantments.Enchantment;

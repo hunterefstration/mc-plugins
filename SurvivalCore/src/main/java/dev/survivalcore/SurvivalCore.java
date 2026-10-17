@@ -4,7 +4,6 @@ import dev.survivalcore.dupers.DupersModule;
 import dev.survivalcore.effectbooks.EffectBooksModule;
 import dev.survivalcore.enderchest.EnderChestModule;
 import dev.survivalcore.endportal.EndPortalModule;
-import dev.survivalcore.luck.LuckModule;
 import dev.survivalcore.ores.OreGrowthModule;
 import dev.survivalcore.pvp.AttributeSwapModule;
 import dev.survivalcore.recipes.RecipesModule;
@@ -54,7 +53,6 @@ public class SurvivalCore extends JavaPlugin {
         register(new EnderChestModule(this));
         register(new RevaultingModule(this));
         register(new OreGrowthModule(this));
-        register(new LuckModule(this));
 
         bind("survivalcore", null, new AdminCommand());
         enableModules();
@@ -94,7 +92,7 @@ public class SurvivalCore extends JavaPlugin {
             }
         }
         List<String> names = new ArrayList<>();
-        enabled.forEach(m -> { if (!m.hidden()) names.add(m.displayName()); });
+        enabled.forEach(m -> names.add(m.displayName()));
         getLogger().info("Enabled: " + String.join(", ", names));
     }
 
@@ -166,7 +164,6 @@ public class SurvivalCore extends JavaPlugin {
             }
             sender.sendMessage(ChatColor.GOLD + "SurvivalCore " + getPluginMeta().getVersion());
             for (Module module : modules.values()) {
-                if (module.hidden()) continue;
                 boolean on = enabled.contains(module);
                 sender.sendMessage((on ? ChatColor.GREEN + "  ON  " : ChatColor.RED + "  OFF ")
                         + ChatColor.WHITE + module.displayName() + ChatColor.DARK_GRAY + " (" + module.id() + ")");

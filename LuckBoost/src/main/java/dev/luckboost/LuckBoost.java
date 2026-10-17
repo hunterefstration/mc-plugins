@@ -1,7 +1,5 @@
-package dev.survivalcore.luck;
+package dev.luckboost;
 
-import dev.survivalcore.Module;
-import dev.survivalcore.SurvivalCore;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameRule;
@@ -33,6 +31,7 @@ import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDispenseLootEvent;
 import org.bukkit.event.block.BlockDropItemEvent;
@@ -50,6 +49,7 @@ import org.bukkit.loot.LootContext;
 import org.bukkit.loot.LootTable;
 import org.bukkit.loot.LootTables;
 import org.bukkit.loot.Lootable;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
 
 import java.io.File;
@@ -69,7 +69,7 @@ import java.util.logging.Level;
 
 /**
  * Hidden luck boost. Ops give a player a boost level with /luckboost; nobody else can see the
- * command, it isn't listed in /sc, and the player is never told.
+ * command, and the player is never told.
  *
  * <p>With boost level N, every loot roll that player causes is rolled N extra times with N more
  * luck, and they get the best result. This covers loot chests, barrels and minecart chests, trial
@@ -77,7 +77,7 @@ import java.util.logging.Level;
  * piglin bartering. It also adds N to their Luck attribute, which vanilla uses for anything
  * luck-based. Only the loot itself is ever swapped: anything else in a drop is left alone.
  */
-public final class LuckModule extends Module {
+public class LuckBoost extends JavaPlugin implements Listener {
 
     private static final int MAX_LEVEL = 50;
     /**
@@ -87,8 +87,8 @@ public final class LuckModule extends Module {
     private static final Set<String> MAP_TABLES = Set.of("chests/shipwreck_map", "chests/underwater_ruin_big",
             "chests/underwater_ruin_small");
 
-    private final NamespacedKey modifierKey;
-    private final File file;
+    private NamespacedKey modifierKey;
+    private File file;
     private final Map<UUID, Integer> levels = new HashMap<>();
     private final Random random = new Random();
     /**
@@ -98,20 +98,36 @@ public final class LuckModule extends Module {
     private record BreakSnapshot(Map<Block, BlockState> neighbours, ItemStack tool) {}
     private final Map<Block, BreakSnapshot> neighbours = new HashMap<>();
 
-    public LuckModule(SurvivalCore plugin) {
-        super(plugin, "luck-boost", "LuckBoost");
-        this.modifierKey = new NamespacedKey(plugin, "lb");
-        this.file = new File(plugin.getDataFolder(), "luck.yml");
-        plugin.bind("luckboost", this, new LuckCommand());
+    @Override
+    public void onEnable() {
+        modifierKey = new NamespacedKey(this, "lb");
+        file = new File(getDataFolder(), "luck.yml");
+        importFromSurvivalCore();
+        load();
+        var command = getCommand("luckboost");
+        LuckCommand executor = new LuckCommand();
+        command.setExecutor(executor);
+        command.setTabCompleter(executor);
+        getServer().getPluginManager().registerEvents(this, this);
     }
 
-    @Override
-    public boolean hidden() {
-        return true;
+    /**
+     * The boost used to be part of SurvivalCore: carry its levels over the first time this runs
+     * (SurvivalCore's file is left alone).
+     */
+    private void importFromSurvivalCore() {
+        File old = new File(getDataFolder().getParentFile(), "SurvivalCore" + File.separator + "luck.yml");
+        if (file.exists() || !old.isFile()) return;
+        try {
+            getDataFolder().mkdirs();
+            java.nio.file.Files.copy(old.toPath(), file.toPath());
+            getLogger().info("Carried the levels over from SurvivalCore.");
+        } catch (IOException e) {
+            getLogger().log(Level.WARNING, "Could not carry the levels over from SurvivalCore", e);
+        }
     }
 
-    @Override
-    public void enable() {
+    private void load() {
         levels.clear();
         neighbours.clear();
         YamlConfiguration data = YamlConfiguration.loadConfiguration(file);
@@ -129,7 +145,7 @@ public final class LuckModule extends Module {
     }
 
     @Override
-    public void disable() {
+    public void onDisable() {
         for (Player p : Bukkit.getOnlinePlayers()) removeAttribute(p);
         neighbours.clear();
     }
@@ -140,7 +156,7 @@ public final class LuckModule extends Module {
         try {
             data.save(file);
         } catch (IOException e) {
-            plugin.getLogger().log(Level.WARNING, "Could not save luck.yml", e);
+            getLogger().log(Level.WARNING, "Could not save luck.yml", e);
         }
     }
 
@@ -366,7 +382,7 @@ public final class LuckModule extends Module {
         }
         neighbours.put(event.getBlock(), new BreakSnapshot(around, event.getPlayer().getInventory().getItemInMainHand().clone()));
         // Normally used straight away by the drop event; never kept past this tick.
-        plugin.getServer().getScheduler().runTask(plugin, () -> neighbours.remove(event.getBlock()));
+        getServer().getScheduler().runTask(this, () -> neighbours.remove(event.getBlock()));
     }
 
     /** LOWEST: before other plugins add their own drops, which must never be swapped away. */

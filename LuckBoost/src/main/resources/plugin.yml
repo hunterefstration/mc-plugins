@@ -1,0 +1,16 @@
+name: LuckBoost
+version: '${version}'
+main: dev.luckboost.LuckBoost
+api-version: '1.21'
+author: hunterefstration
+description: Admin tool.
+commands:
+  luckboost:
+    description: Admin tool.
+    aliases: [lb]
+    permission: luckboost.use
+    usage: /<command> [list|<player> [level|off]]
+permissions:
+  luckboost.use:
+    description: Admin tool.
+    default: op
